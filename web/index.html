@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>HoloStage</title>
+<style>
+  :root {
+    --holo: #3fb9ff;
+    --holo-dim: rgba(63, 185, 255, 0.45);
+    --holo-faint: rgba(63, 185, 255, 0.18);
+    --panel-bg: rgba(4, 12, 22, 0.82);
+    --panel-line: rgba(63, 185, 255, 0.35);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  body { font-family: "SF Mono", Menlo, monospace; color: var(--holo); }
+
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* ---------- HUD 叠加层 ---------- */
+  #hud { position: absolute; inset: 0; pointer-events: none; }
+  #ringWrap { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+  #ringA { animation: spin 24s linear infinite; }
+  #ringB { animation: spin 40s linear infinite reverse; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #title {
+    position: absolute; right: 26px; bottom: 40px;
+    font-size: 26px; font-weight: 800; font-style: italic;
+    letter-spacing: 0.22em; color: var(--holo);
+    text-shadow: 0 0 12px var(--holo-dim);
+    white-space: nowrap; max-width: 70%; overflow: hidden;
+  }
+  #titleRule {
+    position: absolute; right: 26px; bottom: 34px; width: 260px; height: 2px;
+    background: linear-gradient(90deg, var(--holo), transparent);
+    box-shadow: 0 0 8px var(--holo-dim);
+  }
+  #bars { position: absolute; right: 26px; bottom: 12px; display: flex; gap: 3px; align-items: flex-end; }
+  #bars span {
+    width: 7px; background: var(--holo);
+    box-shadow: 0 0 6px var(--holo-dim);
+    animation: bar 1.6s ease-in-out infinite;
+  }
+  @keyframes bar { 0%,100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+  .corner { position: absolute; width: 34px; height: 34px; border: 2px solid var(--panel-line); }
+  #c-tl { left: 14px; top: 14px; border-right: 0; border-bottom: 0; }
+  #c-tr { right: 14px; top: 14px; border-left: 0; border-bottom: 0; }
+  #c-bl { left: 14px; bottom: 14px; border-right: 0; border-top: 0; }
+  #c-br { right: 14px; bottom: 14px; border-left: 0; border-top: 0; }
+
+  #scanline {
+    position: absolute; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(63,185,255,0.02) 3px 4px);
+  }
+
+  /* ---------- 状态条 ---------- */
+  #status {
+    position: absolute; left: 26px; bottom: 14px;
+    font-size: 12px; letter-spacing: 0.12em; color: var(--holo-dim);
+    text-shadow: 0 0 8px var(--holo-faint);
+  }
+
+  /* ---------- 拖放提示 ---------- */
+  #dropHint {
+    position: absolute; inset: 0; display: none;
+    border: 2px dashed var(--holo);
+    background: rgba(63, 185, 255, 0.06);
+    align-items: center; justify-content: center;
+    font-size: 20px; letter-spacing: 0.3em; color: var(--holo);
+    text-shadow: 0 0 14px var(--holo-dim); z-index: 40; pointer-events: none;
+  }
+  #dropHint.on { display: flex; }
+
+  /* ---------- 控制面板 ---------- */
+  #panel {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 236px;
+    background: var(--panel-bg); border-left: 1px solid var(--panel-line);
+    backdrop-filter: blur(6px); z-index: 30;
+    padding: 14px 14px 20px; overflow-y: auto;
+    transition: transform 0.25s ease;
+  }
+  #panel.hidden { transform: translateX(100%); }
+  #panel h2 { font-size: 12px; letter-spacing: 0.3em; margin: 14px 0 8px; color: var(--holo-dim); border-bottom: 1px solid var(--panel-line); padding-bottom: 4px; }
+  #panel h2:first-child { margin-top: 0; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; font-size: 12px; }
+  .row label { color: var(--holo-dim); }
+  input[type=range] { width: 110px; accent-color: var(--holo); }
+  input[type=text] {
+    width: 100%; background: rgba(63,185,255,0.08); border: 1px solid var(--panel-line);
+    color: var(--holo); padding: 5px 8px; font-family: inherit; font-size: 12px; letter-spacing: 0.1em;
+  }
+  input[type=checkbox] { accent-color: var(--holo); }
+  .swatches { display: flex; gap: 8px; margin: 8px 0; }
+  .sw { width: 26px; height: 26px; border-radius: 4px; cursor: pointer; border: 2px solid transparent; }
+  .sw.on { border-color: #fff; }
+  button {
+    display: block; width: 100%; margin: 8px 0; padding: 8px;
+    background: rgba(63,185,255,0.10); border: 1px solid var(--panel-line);
+    color: var(--holo); font-family: inherit; font-size: 12px; letter-spacing: 0.2em;
+    cursor: pointer; text-transform: uppercase;
+  }
+  button:hover { background: rgba(63,185,255,0.25); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #panelToggle {
+    position: absolute; right: 12px; top: 12px; z-index: 35;
+    width: auto; margin: 0; padding: 6px 12px; display: none;
+  }
+  #panel.hidden ~ #panelToggle { display: block; }
+
+  #fileInput { display: none; }
+  #err { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); background: rgba(60,0,10,0.85); border: 1px solid #ff4d5e; color: #ff8d98; padding: 10px 18px; font-size: 12px; z-index: 50; display: none; max-width: 70%; }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div id="hud">
+    <div id="ringWrap"></div>
+    <div id="title">HOLOSTAGE</div>
+    <div id="titleRule"></div>
+    <div id="bars"></div>
+    <div class="corner" id="c-tl"></div><div class="corner" id="c-tr"></div>
+    <div class="corner" id="c-bl"></div><div class="corner" id="c-br"></div>
+    <div id="scanline"></div>
+  </div>
+
+  <div id="status">NO MODEL LOADED — 拖入 STL / OBJ / glTF / PLY / FBX / PMX</div>
+  <div id="dropHint">释放以载入模型</div>
+  <div id="err"></div>
+
+  <div id="panel">
+    <h2>模型</h2>
+    <button id="btnOpen">打开模型文件</button>
+    <div class="row"><label>标题</label></div>
+    <input type="text" id="inpTitle" value="HOLOSTAGE">
+    <h2>全息风格</h2>
+    <div class="swatches" id="swatches"></div>
+    <div class="row"><label>线框模式</label><span id="valMode">边缘</span></div>
+    <button id="btnMode">切换 边缘 / 全网格</button>
+    <div class="row"><label>折痕阈值</label><span id="valAngle">32°</span></div>
+    <input type="range" id="inpAngle" min="1" max="80" value="32" style="width:100%">
+    <div class="row"><label>辉光强度</label><span id="valBloom">1.1</span></div>
+    <input type="range" id="inpBloom" min="0" max="30" value="11" style="width:100%">
+    <div class="row"><label>模型缩放</label><span id="valScale">1.0</span></div>
+    <input type="range" id="inpScale" min="30" max="250" value="100" style="width:100%">
+    <div class="row"><label>Z 轴朝上</label><input type="checkbox" id="inpZup"></div>
+    <h2>场景</h2>
+    <div class="row"><label>转速</label><span id="valSpeed">0.5</span></div>
+    <input type="range" id="inpSpeed" min="0" max="20" value="5" style="width:100%">
+    <div class="row"><label>网格地台</label><input type="checkbox" id="inpGrid" checked></div>
+    <div class="row"><label>HUD 叠加层</label><input type="checkbox" id="inpHud" checked></div>
+    <h2>导出</h2>
+    <div class="row"><label>GIF 帧数</label><span id="valFrames">24</span></div>
+    <input type="range" id="inpFrames" min="8" max="60" value="24" style="width:100%">
+    <button id="btnGif">导出 GIF 动画</button>
+    <button id="btnSeq">导出 PNG 帧序列</button>
+    <button id="btnShot">导出当前帧 PNG</button>
+  </div>
+  <button id="panelToggle" onclick="document.getElementById('panel').classList.remove('hidden')">面板</button>
+
+  <input type="file" id="fileInput" accept=".stl,.obj,.gltf,.glb,.ply,.fbx,.pmx,.pmd">
+  <script src="lib/three.min.js"></script>
+  <script src="lib/fflate.min.js"></script>
+  <script src="lib/mmdparser.min.js"></script>
+  <script src="lib/CopyShader.js"></script>
+  <script src="lib/LuminosityHighPassShader.js"></script>
+  <script src="lib/Pass.js"></script>
+  <script src="lib/EffectComposer.js"></script>
+  <script src="lib/RenderPass.js"></script>
+  <script src="lib/MaskPass.js"></script>
+  <script src="lib/ShaderPass.js"></script>
+  <script src="lib/UnrealBloomPass.js"></script>
+  <script src="lib/STLLoader.js"></script>
+  <script src="lib/OBJLoader.js"></script>
+  <script src="lib/PLYLoader.js"></script>
+  <script src="lib/GLTFLoader.js"></script>
+  <script src="lib/FBXLoader.js"></script>
+  <script src="lib/MMDLoader.js"></script>
+  <script src="lib/gif.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

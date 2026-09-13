@@ -1,0 +1,28 @@
+#!/bin/bash
+# HoloStage 构建 — swiftc 直编 universal（x86_64 + arm64），最低 macOS 12
+set -e
+cd "$(dirname "$0")"
+APP=HoloStage
+VER=$(python3 -c "import plistlib;print(plistlib.load(open('Resources/Info.plist','rb'))['CFBundleShortVersionString'])")
+BUILD=build
+rm -rf "$BUILD"
+mkdir -p "$BUILD/x86" "$BUILD/arm64" "$BUILD/$APP.app/Contents/MacOS" "$BUILD/$APP.app/Contents/Resources"
+
+SDK=$(xcrun --show-sdk-path)
+echo "==> 编译 x86_64"
+swiftc -O -sdk "$SDK" -target x86_64-apple-macosx12.0 \
+  Sources/main.swift -o "$BUILD/x86/$APP" -framework Cocoa -framework WebKit
+echo "==> 编译 arm64"
+swiftc -O -sdk "$SDK" -target arm64-apple-macosx12.0 \
+  Sources/main.swift -o "$BUILD/arm64/$APP" -framework Cocoa -framework WebKit
+echo "==> lipo 合并 universal"
+lipo -create "$BUILD/x86/$APP" "$BUILD/arm64/$APP" -output "$BUILD/$APP.app/Contents/MacOS/$APP"
+
+echo "==> 组装 bundle"
+cp Resources/Info.plist "$BUILD/$APP.app/Contents/Info.plist"
+[ -f AppIcon.icns ] || python3 make_icon.py
+cp AppIcon.icns "$BUILD/$APP.app/Contents/Resources/"
+cp -R web "$BUILD/$APP.app/Contents/Resources/web"
+codesign --force --deep --sign - "$BUILD/$APP.app"
+echo "==> 完成: $BUILD/$APP.app (v$VER)"
+file "$BUILD/$APP.app/Contents/MacOS/$APP"
