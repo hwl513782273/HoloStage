@@ -4,6 +4,47 @@
 import Cocoa
 import WebKit
 
+// MARK: - 自定义 scheme 文件服务（holo://f/<绝对路径>）
+// WKWebView 禁止 JS 对 file:// 发 XHR/fetch，用 scheme handler 给 three.js 供字节
+
+final class HoloSchemeHandler: NSObject, WKURLSchemeHandler {
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        let url = urlSchemeTask.request.url!
+        // holo://f/<percent-encoded 绝对路径>
+        guard url.absoluteString.hasPrefix("holo://f/") else {
+            finishTask(urlSchemeTask, data: Data(), status: 404)
+            return
+        }
+        var p = String(url.absoluteString.dropFirst("holo://f/".count))
+        // 去掉可能的 ?query
+        if let q = p.firstIndex(of: "?") { p = String(p[..<q]) }
+        let path = p.removingPercentEncoding ?? p
+        guard FileManager.default.fileExists(atPath: path),
+              let data = FileManager.default.contents(atPath: path) else {
+            finishTask(urlSchemeTask, data: Data(), status: 404)
+            return
+        }
+        finishTask(urlSchemeTask, data: data, status: 200, path: path)
+    }
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+
+    private func finishTask(_ task: WKURLSchemeTask, data: Data, status: Int, path: String? = nil) {
+        let mime: String
+        switch (path.map { URL(fileURLWithPath: $0 ).pathExtension.lowercased() } ?? "") {
+        case "obj", "gltf", "json", "js": mime = "text/plain"
+        default: mime = "application/octet-stream"
+        }
+        let rsp = HTTPURLResponse(url: task.request.url!, statusCode: status,
+                                  httpVersion: "HTTP/1.1",
+                                  headerFields: ["Content-Type": mime,
+                                                 "Content-Length": String(data.count),
+                                                 "Access-Control-Allow-Origin": "*"])!
+        task.didReceive(rsp)
+        task.didReceive(data)
+        task.didFinish()
+    }
+}
+
 // MARK: - 支持文件拖放的 WKWebView
 
 final class DropWebView: WKWebView {
@@ -107,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
         let cfg = WKWebViewConfiguration()
         cfg.userContentController.add(self, name: "holo")
+        cfg.setURLSchemeHandler(HoloSchemeHandler(), forURLScheme: "holo")
         webView = DropWebView(frame: .zero, configuration: cfg)
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.setValue(false, forKey: "drawsBackground")
@@ -189,7 +231,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     private func loadModel(at url: URL) {
-        let js = "window.holoLoadFile && window.holoLoadFile(\"\(url.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\", \"\(url.lastPathComponent.replacingOccurrences(of: "\"", with: ""))\");"
+        // 转成 holo:// scheme URL，让 JS 侧 three.js loader 能 fetch 到字节
+        let enc = url.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? url.path
+        let safeName = url.lastPathComponent.replacingOccurrences(of: "\"", with: "")
+        let js = "window.holoLoadFile && window.holoLoadFile(\"holo://f/\(enc)\", \"\(safeName)\");"
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
@@ -232,6 +277,17 @@ extension AppDelegate: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let p = ProcessInfo.processInfo.environment["HOLO_MODEL"] {
             loadModel(at: URL(fileURLWithPath: p))
+        }
+        if ProcessInfo.processInfo.environment["HOLO_DEBUG"] != nil {
+            let dbg = """
+            (function(){
+              var s = document.getElementById('status');
+              fetch('file:///tmp/holo_test_torus.obj').then(function(r){
+                s.textContent = 'FETCH status=' + r.status + ' type=' + r.type;
+              }).catch(function(e){ s.textContent = 'FETCH ERR ' + e; });
+            })();
+            """
+            webView.evaluateJavaScript(dbg, completionHandler: nil)
         }
     }
 }

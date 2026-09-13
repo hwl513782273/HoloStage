@@ -56,7 +56,7 @@
   var srcMeshes = [];   // { geometry, matrix } 原始几何缓存
   var srcWrap = new THREE.Group(); // 应用 zup 旋转
   var state = {
-    speed: 0.5, mode: "edges", angle: 32, scale: 1.0, zup: false,
+    speed: 0.5, mode: "wire", angle: 32, scale: 1.0, zup: false,
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE"
   };
 
@@ -72,7 +72,7 @@
       transparent: true, opacity: 0.85,
       blending: THREE.AdditiveBlending, depthWrite: false
     });
-    var totalTris = 0;
+    var totalTris = 0, totalSegs = 0;
     srcMeshes.forEach(function (item) {
       var g = item.geometry;
       if (!g || !g.attributes || !g.attributes.position) return;
@@ -83,11 +83,12 @@
           ? new THREE.EdgesGeometry(g, state.angle)
           : new THREE.WireframeGeometry(g);
       } catch (e) { return; }
+      totalSegs += wg.attributes.position.count / 2;
       var line = new THREE.LineSegments(wg, mat);
       line.applyMatrix4(item.matrix);
       wireGroup.add(line);
     });
-    return Math.round(totalTris);
+    return { tris: Math.round(totalTris), segs: Math.round(totalSegs) };
   }
 
   function normalizeModel() {
@@ -142,8 +143,11 @@
     if (!kind) { showError("不支持的格式: ." + ext); return; }
     hideError();
     statusEl.textContent = "LOADING " + name.toUpperCase() + " ...";
-    // 文件 URL 带中文/空格需编码
-    var enc = encodeURI(url).replace(/#/g, "%23").replace(/\?/g, "%3F");
+    // 原生层传入 holo://f/<encoded path>；浏览器调试环境才本地转 file://
+    var isScheme = /^holo:\/\//i.test(url);
+    var enc = isScheme ? url
+      : encodeURI(/^file:\/\//i.test(url) ? url : "file://" + url)
+          .replace(/#/g, "%23").replace(/\?/g, "%3F");
     function done(object3DorGeom, tris) {
       srcMeshes = [];
       if (object3DorGeom.isBufferGeometry) {
@@ -157,13 +161,13 @@
         });
       }
       if (!srcMeshes.length) { showError("文件中未找到网格数据"); return; }
-      var n = buildWireframe();
+      var res = buildWireframe();
       normalizeModel();
       var base = name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").toUpperCase();
       state.fileName = name;
       $("inpTitle").value = base;
       titleEl.textContent = base;
-      statusEl.textContent = name.toUpperCase() + " — " + tris.toLocaleString() + " TRIS — " + n.toLocaleString() + " WIREFRAME SEGS";
+      statusEl.textContent = name.toUpperCase() + " — " + res.tris.toLocaleString() + " TRIS — " + res.segs.toLocaleString() + " WIREFRAME SEGS";
     }
     function fail(err) { showError("载入失败: " + (err && err.message ? err.message : err)); }
     try {
@@ -344,6 +348,10 @@
   }
 
   /* ---------- 导出 GIF ---------- */
+  // bundle 内 gif.worker.js 的绝对路径（给 holo:// scheme 用）
+  function bundleWorkerPath() {
+    return location.pathname.replace(/[^/]*$/, "") + "lib/gif.worker.js";
+  }
   var exporting = false;
   $("btnGif").onclick = function () {
     if (exporting || !srcMeshes.length) return;
@@ -352,8 +360,9 @@
     var count = +$("inpFrames").value;
     var scale = Math.min(1, 560 / canvas.clientWidth);
     var w = Math.round(canvas.clientWidth * scale), h = Math.round(canvas.clientHeight * scale);
-    // worker 用 Blob URL（file:// 下 Worker 构造受限）
-    fetch("lib/gif.worker.js").then(function (r) { return r.text(); }).then(function (code) {
+    // worker 代码：App 内（有原生桥）走 holo:// scheme 取 bundle 内资源；浏览器调试用相对路径
+    var workerSrc = bridge ? "holo://f/" + encodeURI(bundleWorkerPath()) : "lib/gif.worker.js";
+    fetch(workerSrc).then(function (r) { return r.text(); }).then(function (code) {
       var workerUrl = URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
       var gif = new GIF({ workers: 1, quality: 8, width: w, height: h, workerScript: workerUrl });
       captureFrames(count, function (i, cnv) {
