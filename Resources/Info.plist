@@ -11,9 +11,9 @@
 	<key>CFBundleDisplayName</key>
 	<string>HoloStage</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0-beta</string>
+	<string>1.1-beta</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleIconFile</key>
@@ -25,7 +25,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>© 2026 banqiu · 渲染引擎 three.js r128 (MIT)</string>
+	<string>© 2026 banqiu · 渲染引擎 three.js r170 + tinyusdz (MIT/Apache-2.0)</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

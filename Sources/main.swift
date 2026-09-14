@@ -116,7 +116,7 @@ final class BrandHeader: NSView {
             .applicationName: "HoloStage",
             .applicationVersion: version,
             .version: version,
-            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / PLY / FBX / PMX\n变成复古未来风线框全息加载动画。\n渲染引擎 three.js r128（本地内置，离线可用）")
+            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\n渲染引擎 three.js r170 + tinyusdz（本地内置，离线可用）")
         ])
     }
 }
@@ -222,20 +222,133 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.allowedFileTypes = ["stl", "obj", "gltf", "glb", "ply", "fbx", "pmx", "pmd"]
-        panel.message = "选择 3D 模型文件（STL / OBJ / glTF / PLY / FBX / PMX）"
+        panel.allowedFileTypes = ["stl", "obj", "gltf", "glb", "ply", "fbx", "pmx", "pmd", "usdz", "usd", "zip"]
+        panel.message = "选择 3D 模型文件（STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP 包）"
         panel.begin { [weak self] resp in
             guard resp == .OK, let url = panel.url else { return }
             self?.loadModel(at: url)
         }
     }
 
+    // MARK: ZIP 包支持（含嵌套 ZIP，如「外层 zip 套内层 zip 套 OBJ+MTL+贴图」）
+
+    /// 支持的模型扩展名（用于在解压目录中挑主模型）
+    private static let modelExts: [String: Int] = [
+        "glb": 0, "gltf": 1, "fbx": 2, "obj": 3, "pmx": 4, "pmd": 5, "usdz": 6, "usd": 6, "ply": 7, "stl": 8
+    ]
+
+    /// 上一次解压的临时目录（新解压前清理）
+    private var zipWorkDir: URL?
+
+    private func jsString(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+         .replacingOccurrences(of: "\n", with: "\\n")
+    }
+
+    private func notifyJS(_ msg: String, isError: Bool = false) {
+        let js = "window.holoNativeStatus && window.holoNativeStatus(\"\(jsString(msg))\", \(isError ? "true" : "false"));"
+        DispatchQueue.main.async { [weak self] in
+            self?.webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+
     private func loadModel(at url: URL) {
+        if url.pathExtension.lowercased() == "zip" {
+            loadFromZip(at: url)
+            return
+        }
         // 转成 holo:// scheme URL，让 JS 侧 three.js loader 能 fetch 到字节
         let enc = url.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? url.path
         let safeName = url.lastPathComponent.replacingOccurrences(of: "\"", with: "")
         let js = "window.holoLoadFile && window.holoLoadFile(\"holo://f/\(enc)\", \"\(safeName)\");"
         webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    private func loadFromZip(at url: URL) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            self.notifyJS("EXTRACTING \(url.lastPathComponent.uppercased()) ...")
+            do {
+                let dir = try self.extractZipTree(at: url)
+                guard let model = self.pickMainModel(in: dir) else {
+                    self.notifyJS("ZIP 内未找到模型文件（支持 OBJ / FBX / glTF / GLB / PLY / STL / PMX / USDZ）", isError: true)
+                    return
+                }
+                self.notifyJS("LOADED FROM ZIP: \(model.lastPathComponent)")
+                DispatchQueue.main.async { self.loadModel(at: model) }
+            } catch {
+                self.notifyJS("ZIP 解压失败: \(error.localizedDescription)", isError: true)
+            }
+        }
+    }
+
+    /// 解压 ZIP；若解压结果中没有模型文件，继续解压里面嵌套的 ZIP（最多 3 层）
+    private func extractZipTree(at url: URL) throws -> URL {
+        let fm = FileManager.default
+        if let prev = zipWorkDir { try? fm.removeItem(at: prev) }
+        let root = fm.temporaryDirectory.appendingPathComponent("HoloStageZip-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        zipWorkDir = root
+
+        var extracted = Set<String>()
+        var queue: [URL] = [url]
+        var depth = 0
+        while !queue.isEmpty && depth < 3 {
+            var nextQueue: [URL] = []
+            for z in queue {
+                guard extracted.insert(z.path).inserted else { continue }
+                let dest = root.appendingPathComponent("L\(depth)_\(z.deletingPathExtension().lastPathComponent)")
+                try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                p.arguments = ["-x", "-k", z.path, dest.path]
+                p.standardError = FileHandle.nullDevice
+                try p.run()
+                p.waitUntilExit()
+                if p.terminationStatus != 0 { continue }
+                // 本层解出的嵌套 ZIP
+                if depth + 1 < 3 {
+                    nextQueue.append(contentsOf: findFiles(in: dest, exts: ["zip"], skipDirs: true))
+                }
+            }
+            queue = nextQueue
+            depth += 1
+        }
+        return root
+    }
+
+    private func findFiles(in dir: URL, exts: [String], skipDirs: Bool) -> [URL] {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) else { return [] }
+        var out: [URL] = []
+        for case let f as URL in en {
+            let name = f.lastPathComponent
+            if name.hasPrefix(".") || name == "__MACOSX" { en.skipDescendants(); continue }
+            if exts.contains(f.pathExtension.lowercased()) {
+                if let vals = try? f.resourceValues(forKeys: [.isRegularFileKey]), vals.isRegularFile == true {
+                    out.append(f)
+                }
+            } else if skipDirs && exts != ["zip"] { /* noop */ }
+        }
+        return out
+    }
+
+    /// 在解压目录中挑主模型：扩展名优先级 → 文件体积大者优先
+    private func pickMainModel(in root: URL) -> URL? {
+        let candidates = findFiles(in: root, exts: Array(Self.modelExts.keys), skipDirs: true)
+        guard !candidates.isEmpty else { return nil }
+        let fm = FileManager.default
+        let ranked = candidates.map { url -> (URL, Int, Int) in
+            let pri = Self.modelExts[url.pathExtension.lowercased()] ?? 99
+            let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            return (url, pri, size)
+        }.sorted { a, b in
+            if a.1 != b.1 { return a.1 < b.1 }
+            if a.2 != b.2 { return a.2 > b.2 }
+            return a.0.path < b.0.path
+        }
+        return ranked.first?.0
     }
 
     private func saveData(_ data: Data, name: String, ext: String) {
