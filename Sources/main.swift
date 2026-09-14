@@ -32,6 +32,10 @@ final class HoloSchemeHandler: NSObject, WKURLSchemeHandler {
         let mime: String
         switch (path.map { URL(fileURLWithPath: $0 ).pathExtension.lowercased() } ?? "") {
         case "obj", "gltf", "json", "js": mime = "text/plain"
+        case "png": mime = "image/png"      // 1.3.3: 整窗快照 + 自定义背景图
+        case "jpg", "jpeg": mime = "image/jpeg"
+        case "webp": mime = "image/webp"
+        case "gif": mime = "image/gif"
         default: mime = "application/octet-stream"
         }
         let rsp = HTTPURLResponse(url: task.request.url!, statusCode: status,
@@ -116,7 +120,7 @@ final class BrandHeader: NSView {
             .applicationName: "HoloStage",
             .applicationVersion: version,
             .version: version,
-            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n⌘ / ⌥ + 拖拽 = 360° 自由视角（不受地面限制）；全息环支持三轴位移与「Z 轴朝上」。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
+            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n镜头：WASD 平移 · Q/E 推拉 · ⌘ / ⌥ + 拖拽 = 360° 自由视角。\n背景为可自定义的程序化科技底图；导出支持「整个窗口（含界面）」与 GIF 体积上限。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
         ])
     }
 }
@@ -304,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             .applicationName: "HoloStage",
             .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
             .version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
-            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n⌘ / ⌥ + 拖拽 = 360° 自由视角（不受地面限制）；全息环支持三轴位移与「Z 轴朝上」。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
+            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n镜头：WASD 平移 · Q/E 推拉 · ⌘ / ⌥ + 拖拽 = 360° 自由视角。\n背景为可自定义的程序化科技底图；导出支持「整个窗口（含界面）」与 GIF 体积上限。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
         ])
     }
 
@@ -338,8 +342,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if let data = base64Data(body["data"]), let name = body["name"] as? String {
                 saveData(data, name: name, ext: "html")
             }
+        // 1.3.3「整个窗口（含界面）」导出：JS 侧无法栅格化 DOM，只能由原生拍照
+        case "saveSnapshot":
+            let scale = (body["scale"] as? NSNumber)?.doubleValue ?? 2.0
+            let nm = (body["name"] as? String) ?? "holo_ui.png"
+            makeSnapshot(scale: scale) { [weak self] url in
+                guard let self, let url, let data = FileManager.default.contents(atPath: url.path) else {
+                    self?.notifyJS("整窗快照失败", isError: true); return
+                }
+                self.saveData(data, name: nm, ext: "png")
+            }
+        case "snapshotToTemp":
+            let scale = (body["scale"] as? NSNumber)?.doubleValue ?? 2.0
+            let seq = (body["seq"] as? NSNumber)?.intValue ?? -1
+            makeSnapshot(scale: scale) { [weak self] url in
+                guard let self else { return }
+                guard let url else { self.evalJS("window.holoSnapReady && window.holoSnapReady(\(seq), \"\");"); return }
+                let enc = url.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? url.path
+                self.evalJS("window.holoSnapReady && window.holoSnapReady(\(seq), \"holo://f/\(enc)\");")
+            }
+        case "cleanupSnaps":
+            cleanupSnaps()
+        case "pickBackground":
+            pickBackgroundImage()
         default: break
         }
+    }
+
+    /// 1.3.3: 选自定义背景图。走 NSOpenPanel 而不是页面里的 <input type=file> ——
+    /// macOS 的 WKWebView 需要实现 WKUIDelegate.runOpenPanel 才会响应文件输入框，
+    /// 这里直接复用已有的 holo:// 通道把字节交给 JS。
+    private func pickBackgroundImage() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "heic"]
+        panel.message = "选择背景图片（App 内缩放后用作 3D 背景；导出网页会内嵌该副本）"
+        panel.begin { [weak self] resp in
+            guard resp == .OK, let url = panel.url else { return }
+            let enc = url.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? url.path
+            self?.evalJS("window.holoBgImage && window.holoBgImage(\"holo://f/\(enc)\");")
+        }
+    }
+
+    // MARK: 整窗快照（1.3.3）
+
+    private func evalJS(_ js: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+
+    private var snapCounter = 0
+    private var snapFiles: [URL] = []
+
+    /// 拍一张「屏幕上看到的样子」（DOM 叠加层 + WebGL 画面一起），PNG 落临时目录。
+    /// 不把字节塞进 evaluateJavaScript —— 2× 倍率下一张可能好几 MB，
+    /// 交给 JS 用 holo://f/ 取更稳。
+    private func makeSnapshot(scale: Double, completion: @escaping (URL?) -> Void) {
+        let b = webView.bounds
+        guard b.width > 1, b.height > 1 else { completion(nil); return }
+        let back = Double(webView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1)
+        // 目标像素严格 = 窗口点数 × 请求倍率。
+        // 1.3.3 修复：WKSnapshotConfiguration.snapshotWidth 的单位是「点」，Retina 屏上
+        // 返回图还会再乘一次设备倍率 → 界面选 2× 实际出 4×，与「导出像素 = 窗口尺寸 ×N」
+        // 的提示差一倍（整窗 GIF 会因此重 4 倍）。这里先按设备倍率折回，再显式光栅化锁死尺寸。
+        let pxW = max(64, Int(round(b.width * scale)))
+        let pxH = max(64, Int(round(b.height * scale)))
+        let cfg = WKSnapshotConfiguration()
+        cfg.rect = b
+        cfg.snapshotWidth = NSNumber(value: Double(pxW) / back)
+        cfg.afterScreenUpdates = true
+        webView.takeSnapshot(with: cfg) { [weak self] image, error in
+            guard let self else { completion(nil); return }
+            guard error == nil, let image else { completion(nil); return }
+            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pxW, pixelsHigh: pxH,
+                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+                completion(nil); return
+            }
+            NSGraphicsContext.saveGraphicsState()
+            if let gc = NSGraphicsContext(bitmapImageRep: rep) {
+                NSGraphicsContext.current = gc
+                image.draw(in: NSRect(x: 0, y: 0, width: CGFloat(pxW), height: CGFloat(pxH)),
+                           from: .zero, operation: .copy, fraction: 1.0)
+                gc.flushGraphics()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            guard let png = rep.representation(using: .png, properties: [:]) else { completion(nil); return }
+            self.snapCounter += 1
+            let out = FileManager.default.temporaryDirectory
+                .appendingPathComponent("HoloSnap-\(self.snapCounter).png")
+            do {
+                try png.write(to: out)
+                self.snapFiles.append(out)
+                completion(out)
+            } catch { completion(nil) }
+        }
+    }
+
+    private func cleanupSnaps() {
+        for u in snapFiles { try? FileManager.default.removeItem(at: u) }
+        snapFiles.removeAll()
     }
 
     private func base64Data(_ any: Any?) -> Data? {
@@ -528,6 +633,28 @@ extension AppDelegate: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let p = ProcessInfo.processInfo.environment["HOLO_MODEL"] {
             loadModel(at: URL(fileURLWithPath: p))
+        }
+        // 1.3.3 整窗快照自检：拍一张落到 /tmp/holo_snap_selftest.png，打印尺寸后退出。
+        // 用「非黑像素分区占比」判定 DOM 面板与 WebGL 画面是否真的被拍进去。
+        if let sc = ProcessInfo.processInfo.environment["SNAP_SELFTEST"] {
+            let scale = Double(sc) ?? 2.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self else { return }
+                self.makeSnapshot(scale: scale) { url in
+                    guard let url, let data = FileManager.default.contents(atPath: url.path) else {
+                        print("[SNAP-SELFTEST] FAIL 无输出"); exit(2)
+                    }
+                    let out = URL(fileURLWithPath: "/tmp/holo_snap_selftest.png")
+                    try? FileManager.default.removeItem(at: out)
+                    do { try data.write(to: out) } catch { print("[SNAP-SELFTEST] FAIL 写入失败"); exit(3) }
+                    if let rep = NSBitmapImageRep(data: data) {
+                        print("[SNAP-SELFTEST] OK \(rep.pixelsWide)x\(rep.pixelsHigh) bytes=\(data.count) -> \(out.path)")
+                    } else {
+                        print("[SNAP-SELFTEST] OK bytes=\(data.count) -> \(out.path)（解码失败）")
+                    }
+                    exit(0)
+                }
+            }
         }
         if ProcessInfo.processInfo.environment["HOLO_DEBUG"] != nil {
             let dbg = """

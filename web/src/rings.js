@@ -83,17 +83,20 @@ export function buildRingSVG(style, seed, hideDot) {
         '<circle cx="572" cy="300" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
       '</g>' + (hideDot ? '' : '<circle cx="300" cy="300" r="7" fill="currentColor" opacity="0.9"/>');
 
-  } else { /* data 数据弧 */
+  } else { /* data 数据弧（1.3.3：1/4 弧镜像成左右对称两条） */
     var dtp = uid + "lbl";
+    // 每条弧取整角（90° / 60° / 25°），dasharray 按周长 2πr 折算：
+    //   r262 → 1646.2，90° = 411.5 ｜ r234 → 1470.3，60° = 245.0 ｜ r206 → 1294.3，25° = 89.9
+    // 一条弧 + 它关于竖直轴（x=300）的镜像 → 整体左右对称，不再是单侧挂弧
+    var mir = function (s) { return '<g transform="translate(600,0) scale(-1,1)">' + s + '</g>'; };
+    var arcOut = '<circle cx="300" cy="300" r="262" fill="none" stroke="currentColor" stroke-width="5" stroke-opacity="0.85" stroke-dasharray="411.5 1234.7" stroke-linecap="round"/>';
+    var arcIn =
+      '<circle cx="300" cy="300" r="234" fill="none" stroke="currentColor" stroke-width="2" stroke-opacity="0.6" stroke-dasharray="245 1225.3"/>' +
+      '<circle cx="300" cy="300" r="206" fill="none" stroke="currentColor" stroke-width="8" stroke-opacity="0.28" stroke-dasharray="89.9 1204.4" stroke-linecap="round"/>' +
+      '<circle cx="534" cy="300" r="4" fill="currentColor" opacity="0.9"/>';
     inner =
-      '<g class="ringSpin">' +
-        '<circle cx="300" cy="300" r="262" fill="none" stroke="currentColor" stroke-width="5" stroke-opacity="0.85" stroke-dasharray="480 1166" stroke-linecap="round"/>' +
-      '</g>' +
-      '<g class="ringSpinRev">' +
-        '<circle cx="300" cy="300" r="234" fill="none" stroke="currentColor" stroke-width="2" stroke-opacity="0.6" stroke-dasharray="300 1170"/>' +
-        '<circle cx="300" cy="300" r="206" fill="none" stroke="currentColor" stroke-width="8" stroke-opacity="0.28" stroke-dasharray="90 1204" stroke-linecap="round"/>' +
-        '<circle cx="534" cy="300" r="4" fill="currentColor" opacity="0.9"/>' +
-      '</g>' +
+      '<g class="ringSpin">' + arcOut + mir(arcOut) + '</g>' +
+      '<g class="ringSpinRev">' + arcIn + mir(arcIn) + '</g>' +
       '<g class="ringSpinSlow">' +
         '<path id="' + dtp + '" d="M 300 124 a 176 176 0 1 1 -0.01 0" fill="none"/>' +
         '<text font-size="20" fill="currentColor" opacity="0.75" letter-spacing="4"><textPath href="#' + dtp + '">HOLOSTAGE // SYS.LINK // 055-8821 // ONLINE</textPath></text>' +

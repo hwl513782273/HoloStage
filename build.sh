@@ -5,7 +5,12 @@ cd "$(dirname "$0")"
 APP=HoloStage
 VER=$(python3 -c "import plistlib;print(plistlib.load(open('Resources/Info.plist','rb'))['CFBundleShortVersionString'])")
 BUILD=build
-rm -rf "$BUILD"
+# 旧 build 移入废纸篓（rm -rf 会被安全删除钩子拦截）
+if [ -d "$BUILD" ]; then
+  TRASH_OLD="$HOME/.Trash/HoloStage-build-$(date +%s)"
+  mv "$BUILD" "$TRASH_OLD" 2>/dev/null || true
+  echo "==> 旧 build 已入废纸篓: $TRASH_OLD"
+fi
 mkdir -p "$BUILD/x86" "$BUILD/arm64" "$BUILD/$APP.app/Contents/MacOS" "$BUILD/$APP.app/Contents/Resources"
 
 SDK=$(xcrun --show-sdk-path)

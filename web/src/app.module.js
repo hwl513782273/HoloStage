@@ -17,6 +17,10 @@
  *        PNG 序列/单帧 PNG 的实际像素也随之回到标称分辨率
  * 1.3.2: 全息环补 Z 轴深度位移 + 单环「Z 轴朝上」躺平；⌘/⌥ + 拖拽 = 360° 自由视角（不受地面限制）；
  *        原生补标准菜单栏（修 ⌘Q 无法退出）；导出网页查看器同步
+ * 1.3.3: WASD 平移 / QE 推拉镜头；程序化科技背景（bg.js，可换自定义图）；
+ *        导出新增「整个窗口（含界面）」—— 走原生 WKWebView 快照，DOM 叠加层与控制面板都能进图
+ *        （此前只取 WebGL canvas，自由模式下的 DOM 全息环根本没进导出）；GIF 目标体积上限；
+ *        数据弧 1/4 弧改为左右镜像；导出网页查看器同步
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -36,6 +40,7 @@ import { TinyUSDZLoader } from "./vendor/TinyUSDZLoader.js";
 import { TinyUSDZLoaderUtils } from "./vendor/TinyUSDZLoaderUtils.js";
 import { buildRingSVG, RING_STYLES } from "./rings.js";
 import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
+import { buildBackgroundCanvas } from "./bg.js";
 import initTinyUSDZNative from "./tinyusdz-glue.js";
 
 (function () {
@@ -94,6 +99,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
    *   因此不存在极角奇点，可连续翻过天顶与地面之下。
    *   modifier 直接取自鼠标事件（e.metaKey / e.altKey），不留持久按键状态，天然免疫"卡键"。 */
   var CAM_TARGET = new THREE.Vector3(0, 0.85, 0);
+  var CAM_TARGET_HOME = CAM_TARGET.clone(); // 1.3.3: WASD 平移后的复位基准
   var CAM_HOME = { yaw: 0, pitch: Math.asin(0.85 / Math.sqrt(0.85 * 0.85 + 4.8 * 4.8)), dist: Math.sqrt(0.85 * 0.85 + 4.8 * 4.8) };
   var camYaw = CAM_HOME.yaw, camPitch = CAM_HOME.pitch, camDist = CAM_HOME.dist;
   var camFree = false; // 是否处于自由翻滚姿态（camera.up 已偏离世界 up）
@@ -157,6 +163,81 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     gridGroup.add(g1); gridGroup.add(g2);
   }
   buildGrids();
+
+  /* ---------- 背景（1.3.3）----------
+   * 程序化科技底图（bg.js）跟随配色主色；也可载入自定义图片（cover 铺满）。
+   * 做成 CanvasTexture 赋给 scene.background —— 这样才会随 WebGL 画面一起
+   * 进 GIF/PNG/导出网页，而不是只在屏幕上好看的 CSS 装饰。
+   * 纹理按「长宽比 + 配色 + 亮度 + 图片版本」做指纹缓存，参数没变不重建。 */
+  var bgImage = null;   // 自定义背景图（HTMLImageElement）；null = 程序化
+  var bgDataURL = "";   // 降采样后的 data URL（写进导出网页配置）
+  var bgStamp = 0;      // 图片版本号（换图即失效缓存）
+  var bgKey = "";
+  function bgSourceCanvas(w, h) {
+    if (bgImage && bgImage.width) {
+      var cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      var cx = cv.getContext("2d");
+      var s = Math.max(w / bgImage.width, h / bgImage.height); // cover：铺满不留边
+      cx.drawImage(bgImage, (w - bgImage.width * s) / 2, (h - bgImage.height * s) / 2,
+        bgImage.width * s, bgImage.height * s);
+      return cv;
+    }
+    return buildBackgroundCanvas(w, h, PRESETS[currentPreset].css, state.bgBright);
+  }
+  function applyBackground(w, h) {
+    if (!state.bgOn) {
+      if (scene.background && scene.background.isTexture) scene.background.dispose();
+      scene.background = null; bgKey = "";
+      return;
+    }
+    var W = Math.round(Math.min(2048, Math.max(320, w || stageW || 640)));
+    var H = Math.round(Math.min(2048, Math.max(200, h || stageH || 400)));
+    var key = [W, H, currentPreset, state.bgBright, bgImage ? bgStamp : 0].join("|");
+    if (key === bgKey) return;
+    bgKey = key;
+    var tex = new THREE.CanvasTexture(bgSourceCanvas(W, H));
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    if (scene.background && scene.background.isTexture) scene.background.dispose();
+    scene.background = tex;
+  }
+  function setBgImage(dataURL) {
+    if (!dataURL) {
+      bgImage = null; bgDataURL = ""; bgStamp++;
+      statusEl.textContent = "背景已切回程序化生成";
+      applyBackground();
+      return;
+    }
+    var img = new Image();
+    img.onload = function () {
+      bgImage = img; bgDataURL = dataURL; bgStamp++;
+      statusEl.textContent = "背景图已载入（" + img.width + "×" + img.height + "）";
+      applyBackground();
+    };
+    img.onerror = function () { statusEl.textContent = "背景图解析失败"; };
+    img.src = dataURL;
+  }
+  // 降采样到长边 1600 再转 JPEG —— 导出网页里要塞 base64，原图会把 HTML 撑爆
+  function loadBgFromImage(img) {
+    var MAX = 1600;
+    var s = Math.min(1, MAX / Math.max(1, Math.max(img.width, img.height)));
+    var cv = document.createElement("canvas");
+    cv.width = Math.max(1, Math.round(img.width * s));
+    cv.height = Math.max(1, Math.round(img.height * s));
+    cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+    setBgImage(cv.toDataURL("image/jpeg", 0.85));
+  }
+  // 原生选图后回调（holo://f/ 取字节，与模型同一条路）
+  window.holoBgImage = function (url) {
+    fetch(url).then(function (r) { return r.blob(); }).then(function (b) {
+      var o = URL.createObjectURL(b), im = new Image();
+      im.onload = function () { loadBgFromImage(im); URL.revokeObjectURL(o); };
+      im.onerror = function () { statusEl.textContent = "背景图解析失败（格式不支持？）"; };
+      im.src = o;
+    }).catch(function () { statusEl.textContent = "背景图读取失败"; });
+  };
 
   /* ---------- 模型容器 ---------- */
   var modelRoot = new THREE.Group();
@@ -253,6 +334,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     physOn: false, physGravity: 1.0, physStrength: 1.0, // 1.3.0: ammo.js 物理（PMX/PMD）
     vmdUrl: "", vmdName: "",            // 1.3.0: 拖入的 VMD 动作文件
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
+    bgOn: true, bgBright: 1.0,           // 1.3.3: 程序化科技背景（bg.js）开关 / 亮度
+    exportUI: false, exportScale: 2,     // 1.3.3: 导出内容「整个窗口（含界面）」+ 快照倍率
+    sizeLimitMB: 0,                      // 1.3.3: GIF 目标体积上限（0 = 不限）
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
     ringMode: "free",                    // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）
@@ -632,6 +716,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       var els = uiRowEls[part.id];
       if (els && !uiColors[part.id]) els.swatch.value = partColor(part.id);
     });
+    applyBackground(); // 1.3.3: 背景主色跟随配色
   }
 
   function applyPreset(name) {
@@ -992,6 +1077,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     camera.aspect = stageW / stageH;
     camera.updateProjectionMatrix();
     applyRings();
+    applyBackground();
   }
 
   /* ---------- 控制面板事件 ---------- */
@@ -1242,6 +1328,56 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   // 导出参数（1.2）
   $("inpFrames").oninput = function () { $("valFrames").textContent = this.value; };
   $("inpDelay").oninput = function () { state.delay = +this.value; $("valDelay").textContent = this.value; };
+
+  // 背景（1.3.3）
+  $("inpBg").onchange = function () { state.bgOn = this.checked; applyBackground(); };
+  $("inpBgBright").oninput = function () {
+    state.bgBright = +this.value / 100;
+    $("valBgBright").textContent = state.bgBright.toFixed(1);
+    applyBackground();
+  };
+  $("btnBgImg").onclick = function () {
+    if (bridge) { bridge.postMessage({ type: "pickBackground" }); }
+    else { $("bgFileInput").click(); }
+  };
+  $("btnBgClear").onclick = function () { setBgImage(""); };
+  $("bgFileInput").onchange = function () {
+    var f = this.files && this.files[0];
+    if (!f) return;
+    var fr = new FileReader();
+    fr.onload = function () {
+      var im = new Image();
+      im.onload = function () { loadBgFromImage(im); };
+      im.src = fr.result;
+    };
+    fr.readAsDataURL(f);
+    this.value = "";
+  };
+
+  // 导出内容 / 体积上限（1.3.3）
+  function updateExportHint() {
+    var el = $("expUIHint");
+    if (!el) return;
+    if (state.exportUI) {
+      el.textContent = "整个窗口：导出像素 = 窗口尺寸 ×" + state.exportScale +
+        "（约 " + Math.round(window.innerWidth * state.exportScale) + "×" +
+        Math.round(window.innerHeight * state.exportScale) + "）；界面层与控制面板都会进图";
+    } else {
+      el.textContent = "模型区：只导出 3D 画面 —— 自由模式下的全息环、标题、控制面板都不会进图";
+    }
+  }
+  $("selExpUI").onchange = function () {
+    state.exportUI = (this.value === "ui");
+    $("uiScaleRow").style.display = state.exportUI ? "" : "none";
+    $("btnShot").textContent = state.exportUI ? "导出整窗快照 PNG" : "导出当前帧 PNG";
+    updateExportHint();
+  };
+  $("selUiScale").onchange = function () { state.exportScale = +this.value; updateExportHint(); };
+  $("inpSizeLimit").oninput = function () {
+    state.sizeLimitMB = Math.max(0, +this.value || 0);
+    $("valSizeLimit").textContent = state.sizeLimitMB ? state.sizeLimitMB + " MB" : "不限";
+  };
+  updateExportHint();
   document.getElementById("panelToggle").onclick = function () {
     document.getElementById("panel").classList.remove("hidden");
     resize();
@@ -1271,6 +1407,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   var bridge = (window.webkit && window.webkit.messageHandlers.holo)
     ? window.webkit.messageHandlers.holo : null;
 
+  /* 逐帧复制成独立 canvas —— gif.js / PNG 序列都要留住每一帧，
+   * 直接传同一个 canvas 会让所有帧都变成最后一帧的内容。 */
   function captureFrames(count, onFrame, onDone) {
     var base = modelRoot.rotation.y;
     var i = 0;
@@ -1279,9 +1417,74 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       if (i >= count) { onDone(); return; }
       modelRoot.rotation.y = base + i * step;
       composer.render();
-      onFrame(i, canvas);
+      var cv = document.createElement("canvas");
+      cv.width = canvas.width; cv.height = canvas.height; // 导出期间像素比=1，即导出尺寸
+      cv.getContext("2d").drawImage(canvas, 0, 0, cv.width, cv.height);
+      onFrame(i, cv);
       i++;
       setTimeout(next, 16);
+    })();
+  }
+
+  /* ---------- 整窗快照（1.3.3「整个窗口（含界面）」导出）----------
+   * JS 侧拿不到 DOM 的栅格化结果（自由模式的全息环、标题、控制面板都是 DOM），
+   * 只有原生 WKWebView 的 takeSnapshot 能拍到「屏幕上看到的样子」。
+   * 一张 2× 快照好几 MB，走 evaluateJavaScript 传 base64 会卡，
+   * 所以原生先落临时 PNG，JS 用 holo://f/ 取字节（与模型加载同一条路）。 */
+  var snapSeq = 0, snapWait = {};
+  window.holoSnapReady = function (seq, url) {
+    var cb = snapWait[seq];
+    if (cb) { delete snapWait[seq]; cb(url || ""); }
+  };
+  function nativeSnapshot(scale) {
+    return new Promise(function (resolve) {
+      if (!bridge) { resolve(""); return; }
+      var seq = ++snapSeq;
+      snapWait[seq] = resolve;
+      bridge.postMessage({ type: "snapshotToTemp", scale: scale, seq: seq });
+    });
+  }
+  function loadImageURL(url) {
+    return new Promise(function (resolve, reject) {
+      var im = new Image();
+      im.onload = function () { resolve(im); };
+      im.onerror = function () { reject(new Error("快照解码失败")); };
+      im.src = url;
+    });
+  }
+  // 逐帧整窗快照；targetH > 0 时按高度等比缩放（GIF 帧多，避免 4K×N 撑爆内存）
+  function captureFramesUI(count, targetH, onProgress, onDone) {
+    var out = [];
+    var base = modelRoot.rotation.y;
+    var step = (Math.PI * 2) / count;
+    var i = 0;
+    (function next() {
+      if (i >= count) { onDone(out); return; }
+      modelRoot.rotation.y = base + i * step;
+      composer.render();
+      // 等两帧再拍：让合成器把新画面提交上去，否则容易拍到上一帧
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          nativeSnapshot(state.exportScale).then(function (u) {
+            if (!u) { onDone(null); return; }
+            fetch(u).then(function (r) { return r.blob(); }).then(function (b) {
+              var o2 = URL.createObjectURL(b);
+              loadImageURL(o2).then(function (im) {
+                var s = targetH ? (targetH / im.height) : 1;
+                var cv = document.createElement("canvas");
+                cv.width = Math.max(2, Math.round(im.width * s));
+                cv.height = Math.max(2, Math.round(im.height * s));
+                cv.getContext("2d").drawImage(im, 0, 0, cv.width, cv.height);
+                URL.revokeObjectURL(o2);
+                out.push(cv);
+                i++;
+                if (onProgress) onProgress(i, count);
+                next();
+              }).catch(function () { URL.revokeObjectURL(o2); onDone(null); });
+            }).catch(function () { onDone(null); });
+          });
+        });
+      });
     })();
   }
 
@@ -1308,6 +1511,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     composer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    applyBackground(w, h); // 1.3.3: 背景按导出长宽比重建，避免被拉伸
     work(function () {
       renderer.setPixelRatio(pr); // 恢复屏幕显示用的像素比
       resize();
@@ -1318,37 +1522,81 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function bundleWorkerPath() {
     return location.pathname.replace(/[^/]*$/, "") + "lib/gif.worker.js";
   }
-  var exporting = false;
+  var exporting = false, gifWorkerUrl = null;
+  function ensureGifWorker() {
+    if (gifWorkerUrl) return Promise.resolve(gifWorkerUrl);
+    var src = bridge ? "holo://f/" + encodeURI(bundleWorkerPath()).replace(/#/g, "%23") : "lib/gif.worker.js";
+    return fetch(src).then(function (r) { return r.text(); }).then(function (code) {
+      gifWorkerUrl = URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
+      return gifWorkerUrl;
+    });
+  }
+  function mb(n) { return (n / 1048576).toFixed(2) + " MB"; }
+  function scaleFrames(frames, f) {
+    return frames.map(function (cv) {
+      var c2 = document.createElement("canvas");
+      c2.width = Math.max(16, Math.round(cv.width * f));
+      c2.height = Math.max(16, Math.round(cv.height * f));
+      var cx = c2.getContext("2d");
+      cx.imageSmoothingQuality = "high";
+      cx.drawImage(cv, 0, 0, c2.width, c2.height);
+      return c2;
+    });
+  }
+  /* 打包 GIF；若设了「体积上限」且超限，按 sqrt(目标/实际) 缩尺寸并提高压缩重试（最多 3 次）。
+   * GIF 体积≈像素数×帧数（压缩后近似线性于面积），所以用面积比估缩放系数。 */
+  function renderGifFrom(frames, name, attempt) {
+    var limit = state.sizeLimitMB * 1048576;
+    var w = frames[0].width, h = frames[0].height;
+    var gif = new GIF({ workers: 1, quality: 8 + attempt * 5, width: w, height: h, workerScript: gifWorkerUrl });
+    frames.forEach(function (cv) { gif.addFrame(cv, { copy: true, delay: state.delay }); });
+    gif.on("finished", function (blob) {
+      if (limit > 0 && blob.size > limit && attempt < 3) {
+        var f = Math.sqrt(limit / blob.size) * 0.97;
+        statusEl.textContent = "超限 " + mb(blob.size) + " → 第 " + (attempt + 1) + " 次压缩（缩到 " + Math.round(f * 100) + "%）…";
+        renderGifFrom(scaleFrames(frames, f), name, attempt + 1);
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var b64 = reader.result.split(",")[1];
+        if (bridge) bridge.postMessage({ type: "saveGif", data: b64, name: name });
+        else downloadData(reader.result, name);
+        var over = (limit > 0 && blob.size > limit) ? "（仍超上限，已尽力）" : "";
+        finishExport("GIF 已导出: " + name + " (" + w + "×" + h + ", " + mb(blob.size) + ")" + over);
+      };
+      reader.readAsDataURL(blob);
+    });
+    gif.render();
+  }
   $("btnGif").onclick = function () {
     if (exporting || !srcMeshes.length) return;
     exporting = true; this.disabled = true; this.textContent = "GIF 生成中...";
-    statusEl.textContent = "EXPORTING GIF ...";
     var count = +$("inpFrames").value;
     var es = exportSize();
-    var workerSrc = bridge ? "holo://f/" + encodeURI(bundleWorkerPath()).replace(/#/g, "%23") : "lib/gif.worker.js";
-    fetch(workerSrc).then(function (r) { return r.text(); }).then(function (code) {
-      var workerUrl = URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
-      withExportSize(es[0], es[1], function (restore) {
-        var gif = new GIF({ workers: 1, quality: 8, width: es[0], height: es[1], workerScript: workerUrl });
-        captureFrames(count, function (i, cnv) {
-          gif.addFrame(cnv, { copy: true, delay: state.delay });
-        }, function () {
-          gif.on("finished", function (blob) {
-            restore();
-            var reader = new FileReader();
-            reader.onload = function () {
-              var b64 = reader.result.split(",")[1];
-              var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_holo.gif";
-              if (bridge) bridge.postMessage({ type: "saveGif", data: b64, name: name });
-              else downloadData(reader.result, name);
-              finishExport("GIF 已导出: " + name + " (" + es[0] + "×" + es[1] + ")");
-            };
-            reader.readAsDataURL(blob);
-          });
-          gif.render();
+    var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + (state.exportUI ? "_ui" : "") + "_holo.gif";
+    statusEl.textContent = state.exportUI ? "SNAPSHOT 0/" + count + " ..." : "EXPORTING GIF ...";
+    ensureGifWorker().then(function () {
+      if (state.exportUI) {
+        if (!bridge) { finishExport("「整个窗口」导出需在 App 内使用（浏览器没有 DOM 快照能力）"); return; }
+        captureFramesUI(count, es[1], function (i, n) {
+          statusEl.textContent = "SNAPSHOT " + i + "/" + n + " ...";
+        }, function (frames) {
+          bridge.postMessage({ type: "cleanupSnaps" });
+          if (!frames) { finishExport("整窗快照失败（原生未返回画面）"); return; }
+          statusEl.textContent = "PACKING GIF ...";
+          renderGifFrom(frames, name, 0);
         });
-      });
-    });
+      } else {
+        withExportSize(es[0], es[1], function (restore) {
+          var frames = [];
+          captureFrames(count, function (i, cv) { frames.push(cv); }, function () {
+            restore();
+            renderGifFrom(frames, name, 0);
+          });
+        });
+      }
+    }).catch(function (e) { finishExport("GIF 导出失败: " + (e && e.message ? e.message : e)); });
   };
   function finishExport(msg) {
     exporting = false;
@@ -1363,16 +1611,31 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     exporting = true; statusEl.textContent = "EXPORTING PNG SEQ ...";
     var count = +$("inpFrames").value;
     var es = exportSize();
+    var name = state.fileName.replace(/\.[^.]+$/, "") || "holo";
+    function finish(cvs) {
+      if (!cvs) { finishExport("整窗快照失败"); return; }
+      var w = cvs[0].width, h = cvs[0].height;
+      var b64s = cvs.map(function (cv) { return cv.toDataURL("image/png").split(",")[1]; });
+      if (bridge) bridge.postMessage({ type: "savePngSeq", frames: b64s, name: name });
+      else b64s.forEach(function (d, i) { downloadData("data:image/png;base64," + d, name + "_f" + String(i).padStart(2, "0") + ".png"); });
+      exporting = false;
+      statusEl.textContent = "PNG 序列已导出: " + name + "_f00..f" + (count - 1) + " (" + w + "×" + h + ")";
+    }
+    if (state.exportUI) {
+      if (!bridge) { finishExport("「整个窗口」导出需在 App 内使用"); return; }
+      captureFramesUI(count, es[1], function (i, n) {
+        statusEl.textContent = "SNAPSHOT " + i + "/" + n + " ...";
+      }, function (frames) {
+        bridge.postMessage({ type: "cleanupSnaps" });
+        finish(frames);
+      });
+      return;
+    }
     withExportSize(es[0], es[1], function (restore) {
       var frames = [];
-      captureFrames(count, function (i, cnv) {
-        frames.push(cnv.toDataURL("image/png").split(",")[1]);
-      }, function () {
+      captureFrames(count, function (i, cv) { frames.push(cv); }, function () {
         restore();
-        var name = state.fileName.replace(/\.[^.]+$/, "") || "holo";
-        if (bridge) bridge.postMessage({ type: "savePngSeq", frames: frames, name: name });
-        else frames.forEach(function (d, i) { downloadData("data:image/png;base64," + d, name + "_f" + String(i).padStart(2, "0") + ".png"); });
-        exporting = false; statusEl.textContent = "PNG 序列已导出: " + name + "_f00..f" + (count - 1) + " (" + es[0] + "×" + es[1] + ")";
+        finish(frames);
       });
     });
   };
@@ -1381,11 +1644,19 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   $("btnShot").onclick = function () {
     if (!srcMeshes.length) return;
     var es = exportSize();
+    if (state.exportUI) {
+      if (!bridge) { finishExport("「整个窗口」导出需在 App 内使用"); return; }
+      // 整窗快照：像素 = 窗口尺寸 × 倍率；原生直接存盘，不来回搬 base64
+      var nm = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_ui.png";
+      bridge.postMessage({ type: "saveSnapshot", scale: state.exportScale, name: nm });
+      statusEl.textContent = "整窗快照已拍摄: " + nm + "（窗口 ×" + state.exportScale + "，检查保存对话框）";
+      return;
+    }
+    var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_frame.png";
     withExportSize(es[0], es[1], function (restore) {
       composer.render();
       var d = canvas.toDataURL("image/png");
       restore();
-      var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_frame.png";
       if (bridge) bridge.postMessage({ type: "savePng", data: d.split(",")[1], name: name });
       else downloadData(d, name);
       statusEl.textContent = "PNG 已导出: " + name + " (" + es[0] + "×" + es[1] + ")";
@@ -1480,7 +1751,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       anim: !!(mixer && animClips.length),
       rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, z: r.z, s: r.s, p: r.p, r: r.r, w: r.w, zu: r.zu }; }),
       ringMode: state.ringMode,
-      ringAnchor: state.ringAnchor
+      ringAnchor: state.ringAnchor,
+      bg: state.bgOn ? { bright: state.bgBright, img: bgDataURL || "" } : null // 1.3.3: 背景（含自定义图）
     };
     // 1.3.0: PMX 场景先把 VMD 动作 + 物理逐帧烘焙成骨骼关键帧，随 GLB 一起走
     var exportClips = animClips.slice();
@@ -1572,10 +1844,47 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   stageEl.addEventListener("contextmenu", function (e) {
     e.preventDefault();
     camYaw = CAM_HOME.yaw; camPitch = CAM_HOME.pitch; camDist = CAM_HOME.dist;
+    CAM_TARGET.copy(CAM_TARGET_HOME); // 1.3.3: WASD 平移过也要一并回家
     camFree = false; camera.up.set(0, 1, 0); // 1.3.2: 自由翻滚后一并复位 up，否则画面保持倒置
     updateCamera();
     statusEl.textContent = "CAMERA RESET";
   });
+
+  /* 键盘移动镜头（1.3.3）
+   * W/S = 沿屏幕上下移动，A/D = 沿屏幕左右移动（平移观察目标点 CAM_TARGET），
+   * Q/E = 沿视线推拉（改变距离）。受限与自由视角下都生效：
+   * 自由翻滚后 yaw/pitch 已由 syncSpherical 反解，updateCamera() 能精确重建同一姿态，不会跳回。
+   * 只存按键状态、在主循环里按 dt 积分 → 与帧率无关，松键即停，无惯性残留。 */
+  var camKeys = {};
+  var CAM_PAN_SPEED = 2.6, CAM_DOLLY_SPEED = 0.9;
+  window.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey) return; // 让 ⌘Q / ⌘W / ⌘C 等系统快捷键照常走
+    var t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return; // 输入框内不抢键
+    var k = e.code;
+    if (k === "KeyW" || k === "KeyA" || k === "KeyS" || k === "KeyD" || k === "KeyQ" || k === "KeyE") {
+      camKeys[k] = true; e.preventDefault();
+    }
+  });
+  window.addEventListener("keyup", function (e) { delete camKeys[e.code]; });
+  window.addEventListener("blur", function () { camKeys = {}; }); // 切窗清空，防"卡键"
+  var _camRight = new THREE.Vector3(), _camUp = new THREE.Vector3();
+  function updateCamKeys(dt) {
+    var kx = (camKeys.KeyD ? 1 : 0) - (camKeys.KeyA ? 1 : 0);
+    var ky = (camKeys.KeyW ? 1 : 0) - (camKeys.KeyS ? 1 : 0);
+    var kz = (camKeys.KeyE ? 1 : 0) - (camKeys.KeyQ ? 1 : 0);
+    if (!kx && !ky && !kz) return;
+    camera.updateMatrixWorld();
+    _camRight.setFromMatrixColumn(camera.matrixWorld, 0); // 屏幕右
+    _camUp.setFromMatrixColumn(camera.matrixWorld, 1);    // 屏幕上
+    var s = CAM_PAN_SPEED * dt * (camDist / CAM_HOME.dist); // 离得越远走得越快，手感恒定
+    CAM_TARGET.addScaledVector(_camRight, kx * s).addScaledVector(_camUp, ky * s);
+    CAM_TARGET.x = clamp(CAM_TARGET.x, -24, 24);
+    CAM_TARGET.y = clamp(CAM_TARGET.y, -12, 12);
+    CAM_TARGET.z = clamp(CAM_TARGET.z, -24, 24);
+    if (kz) camDist = clamp(camDist * (1 + kz * CAM_DOLLY_SPEED * dt), 1.2, 14);
+    updateCamera();
+  }
   (function loop(now) {
     requestAnimationFrame(loop);
     var dt = Math.min((now - last) / 1000, 0.1); last = now;
@@ -1591,6 +1900,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       $("valAProg").textContent = Math.round(p * 100) + "%";
     }
     if (!exporting) {
+      updateCamKeys(dt); // 1.3.3: WASD 平移 / QE 推拉（导出中不响应）
       spinAngle += state.speed * dt;
       var yaw = spinAngle, roll = 0;
       if (state.parallaxOn) { yaw += mousePar.x * 0.22; roll = mousePar.y * 0.1; }
@@ -1612,5 +1922,5 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     composer.render();
   })(last);
 
-  statusEl.textContent = "READY — 滚轮缩放 · 左键拖动视角 · ⌘/⌥+拖动 360°自由视角 · 右键复位 — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP（PMX 可再拖 .vmd 动作）";
+  statusEl.textContent = "READY — 滚轮缩放 · 左键拖动视角 · WASD 平移 / QE 推拉 · ⌘/⌥+拖动 360°自由视角 · 右键复位 — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP（PMX 可再拖 .vmd 动作）";
 })();

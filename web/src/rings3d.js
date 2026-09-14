@@ -107,13 +107,18 @@ export function drawRingCanvas(style, color, hideDot) {
     x.strokeStyle = color; x.lineWidth = 1.5; x.globalAlpha = 1; x.stroke();
     if (!hideDot) dot(0, 0, 7, 0.9);
 
-  } else { /* data 数据弧 */
+  } else { /* data 数据弧（1.3.3：与 rings.js 同步，1/4 弧镜像成左右对称两条） */
+    function dataArcs() {
+      circle(262, 5, 0.85, [411.5, 1234.7]);
+      circle(234, 2, 0.6, [245, 1225.3]);
+      circle(206, 8, 0.28, [89.9, 1204.4]);
+      dot(234, 0, 4, 0.9);
+    }
     x.lineCap = "round";
-    circle(262, 5, 0.85, [480, 1166]);
-    circle(234, 2, 0.6, [300, 1170]);
-    circle(206, 8, 0.28, [90, 1204]);
+    dataArcs();
+    x.save(); x.scale(-1, 1); x.lineCap = "round"; dataArcs(); x.restore(); // 关于竖直轴镜像
     x.lineCap = "butt";
-    dot(234, 0, 4, 0.9);
+    // 文字环不镜像（字母会反写）
     ringText("HOLOSTAGE // SYS.LINK // 055-8821 // ONLINE", 176, 20, 0.75, 16.4);
   }
 

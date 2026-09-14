@@ -2,6 +2,8 @@
  * 读取 window.HOLO_EXPORT（设置）+ window.HOLO_GLB（模型 base64）还原画面：
  * 配色 / 线框或全彩 / 网格地台 / HUD 三环（含样式与环模式）/ 标题 / 进度条 / 扫描线 / 转速 / 呼吸 / 视差 / 脉冲 / 辉光 / 动画
  * 1.2.6: 环模式（经典 1.0）+ 相机控制（滚轮缩放 / 左键拖动视角 / 右键复位）
+ * 1.3.2: 环三轴位移 + Z 轴朝上躺平；⌘/⌥ 拖拽 360° 自由视角
+ * 1.3.3: WASD 平移 / QE 推拉；程序化科技背景（bg.js，或导出时内嵌的自定义图）
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -10,6 +12,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { buildRingSVG } from "./rings.js";
 import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
+import { buildBackgroundCanvas } from "./bg.js";
 
 (function () {
   "use strict";
@@ -67,7 +70,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
     '<div class="corner" id="c-tl"></div><div class="corner" id="c-tr"></div>' +
     '<div class="corner" id="c-bl"></div><div class="corner" id="c-br"></div>' +
     '<div id="scanline"></div></div></div>' +
-    '<div id="hint">HOLOSTAGE EXPORT — 滚轮缩放 · 拖动视角 · ⌘/⌥+拖动 = 360° 自由视角 · 右键复位</div>');
+    '<div id="hint">HOLOSTAGE EXPORT — 滚轮缩放 · 拖动视角 · WASD 平移 / QE 推拉 · ⌘/⌥+拖动 = 360° 自由视角 · 右键复位</div>');
   var stageEl = document.getElementById("stage");
   var canvas = document.getElementById("gl");
   var hudEl = document.getElementById("hud");
@@ -160,6 +163,39 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
   }
   updateCamera();
 
+  /* 键盘移动镜头（1.3.3）：与 App 端同构 —— W/S 上下、A/D 左右平移观察目标点，Q/E 沿视线推拉 */
+  var camKeys = {};
+  var CAM_TARGET_HOME = CAM_TARGET.clone();
+  var _camRight = new THREE.Vector3(), _camUp = new THREE.Vector3();
+  function clampNum(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+  window.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey) return;
+    var t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+    var k = e.code;
+    if (k === "KeyW" || k === "KeyA" || k === "KeyS" || k === "KeyD" || k === "KeyQ" || k === "KeyE") {
+      camKeys[k] = true; e.preventDefault();
+    }
+  });
+  window.addEventListener("keyup", function (e) { delete camKeys[e.code]; });
+  window.addEventListener("blur", function () { camKeys = {}; }); // 切窗清空，防"卡键"
+  function updateCamKeys(dt) {
+    var kx = (camKeys.KeyD ? 1 : 0) - (camKeys.KeyA ? 1 : 0);
+    var ky = (camKeys.KeyW ? 1 : 0) - (camKeys.KeyS ? 1 : 0);
+    var kz = (camKeys.KeyE ? 1 : 0) - (camKeys.KeyQ ? 1 : 0);
+    if (!kx && !ky && !kz) return;
+    camera.updateMatrixWorld();
+    _camRight.setFromMatrixColumn(camera.matrixWorld, 0);
+    _camUp.setFromMatrixColumn(camera.matrixWorld, 1);
+    var s = 2.6 * dt * (camDist / CAM_HOME.dist);
+    CAM_TARGET.addScaledVector(_camRight, kx * s).addScaledVector(_camUp, ky * s);
+    CAM_TARGET.x = clampNum(CAM_TARGET.x, -24, 24);
+    CAM_TARGET.y = clampNum(CAM_TARGET.y, -12, 12);
+    CAM_TARGET.z = clampNum(CAM_TARGET.z, -24, 24);
+    if (kz) camDist = clampNum(camDist * (1 + kz * 0.9 * dt), 1.2, 14);
+    updateCamera();
+  }
+
   /* 3D 全息环（1.2.7 经典模式）：环心固定在世界中心，随相机透视 */
   var ring3dGroup = new THREE.Group();
   ring3dGroup.position.copy(CAM_TARGET);
@@ -250,6 +286,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
   stageEl.addEventListener("contextmenu", function (e) {
     e.preventDefault();
     camYaw = CAM_HOME.yaw; camPitch = CAM_HOME.pitch; camDist = CAM_HOME.dist;
+    CAM_TARGET.copy(CAM_TARGET_HOME); // 1.3.3: WASD 平移过也要一并回家
     camFree = false; camera.up.set(0, 1, 0); // 1.3.2: 自由翻滚后一并复位 up，否则画面保持倒置
     updateCamera();
   });
@@ -275,6 +312,33 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
   g2.material.transparent = true; g2.material.opacity = 0.9;
   gridGroup.add(g1); gridGroup.add(g2);
   gridGroup.visible = CFG.grid !== false;
+
+  /* 背景（1.3.3）：与 App 端同一个 bg.js 程序化生成；若导出时用的是自定义图则内嵌还原 */
+  function applyBackground() {
+    if (scene.background && scene.background.isTexture) scene.background.dispose();
+    scene.background = null;
+    var cfg = CFG.bg;
+    if (!cfg) return;
+    var W = window.innerWidth, H = window.innerHeight;
+    if (cfg.img) {
+      var im = new Image();
+      im.onload = function () {
+        var cv = document.createElement("canvas");
+        cv.width = W; cv.height = H;
+        var cx = cv.getContext("2d");
+        var s = Math.max(W / im.width, H / im.height);
+        cx.drawImage(im, (W - im.width * s) / 2, (H - im.height * s) / 2, im.width * s, im.height * s);
+        var t = new THREE.CanvasTexture(cv);
+        t.colorSpace = THREE.SRGBColorSpace;
+        scene.background = t;
+      };
+      im.src = cfg.img;
+      return;
+    }
+    var tex = new THREE.CanvasTexture(buildBackgroundCanvas(W, H, preset.css, cfg.bright));
+    tex.colorSpace = THREE.SRGBColorSpace;
+    scene.background = tex;
+  }
 
   /* 灯光（全彩模式用） */
   var hemiLight = new THREE.HemisphereLight(0xffffff, 0x334455, 1.1);
@@ -341,6 +405,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     applyRings();
+    applyBackground();
   }
   window.addEventListener("resize", resize);
   resize();
@@ -352,6 +417,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
     var dt = Math.min((now - last) / 1000, 0.1); last = now;
     tAcc += dt;
     if (mixer) mixer.update(dt);
+    updateCamKeys(dt); // 1.3.3: WASD / QE 移动镜头
     spin += (CFG.speed || 0.5) * dt;
     root.rotation.y = spin + (CFG.parallax ? mousePar.x * 0.22 : 0) +
       (CFG.swayOn ? Math.sin(tAcc * 0.8) * 0.06 * (CFG.swayAmp || 1) : 0); // 1.2.10 摆动
