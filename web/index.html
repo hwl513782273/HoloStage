@@ -122,6 +122,19 @@
 
   #fileInput { display: none; }
   #err { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); background: rgba(60,0,10,0.85); border: 1px solid #ff4d5e; color: #ff8d98; padding: 10px 18px; font-size: 12px; z-index: 50; display: none; max-width: 70%; }
+
+  /* ---------- 界面配色（1.2.3） ---------- */
+  .uc-row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0 2px; font-size: 12px; }
+  .uc-row label { color: var(--ui-dim); }
+  .uc-row .uc-head { display: flex; align-items: center; gap: 6px; }
+  .uc-swatch { width: 26px; height: 18px; padding: 0; border: 1px solid var(--ui-line); background: none; cursor: pointer; }
+  .uc-swatch::-webkit-color-swatch-wrapper { padding: 1px; }
+  .uc-swatch::-webkit-color-swatch { border: none; }
+  .uc-inp {
+    width: 100%; background: rgba(63,185,255,0.08); border: 1px solid var(--ui-line);
+    color: var(--ui); padding: 4px 8px; font-family: inherit; font-size: 11px; letter-spacing: 0.06em;
+  }
+  .uc-inp.bad { border-color: #ff4d5e; color: #ff8d98; }
 </style>
 </head>
 <body>
@@ -183,8 +196,13 @@
     <div class="row"><label>辉光强度</label><span id="valBloom">0.9</span></div>
     <input type="range" id="inpBloom" min="0" max="30" value="9" style="width:100%">
     <div class="row"><label>模型缩放</label><span id="valScale">1.0</span></div>
-    <input type="range" id="inpScale" min="30" max="250" value="100" style="width:100%">
+    <input type="range" id="inpScale" min="30" max="1000" value="100" style="width:100%">
     <div class="row"><label>Z 轴朝上</label><input type="checkbox" id="inpZup"></div>
+    <button id="btnReset">重置变换</button>
+
+    <h2>界面配色（#RRGGBB，auto=跟随配色）</h2>
+    <div id="uiColorList"></div>
+    <button id="btnUIColorReset">全部恢复 auto</button>
 
     <h2>场景</h2>
     <div class="row"><label>转速</label><span id="valSpeed">0.5</span></div>

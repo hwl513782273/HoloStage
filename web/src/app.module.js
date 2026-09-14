@@ -2,6 +2,7 @@
  * 1.1: USDZ（tinyusdz usdc/usda）+ GLB + ZIP（原生解压后进入）
  * 1.2: 模型 XYZ 位移 / 画面比例 / 导出分辨率 / 帧率 / 配色下拉 / 三环独立变换
  * 1.2.2: 配色只作用于画面内（面板固定青蓝）；新增全彩（原材质）渲染 + 全彩氛围开关
+ * 1.2.3: 缩放上限 10×；重置变换按钮；界面部件逐个 #RRGGBB 配色（auto=跟随配色下拉）
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -41,6 +42,20 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     ice:   { main: 0xbfe9ff, css: "#bfe9ff", g1: 0x6fa6c4, g2: 0x2c4658 }
   };
   var currentPreset = "cyan";
+  var uiColors = {}; // 1.2.3: 界面部件自定义色 { partId: "#rrggbb" }，缺省=跟随预设
+  var uiRowEls = {}; // 1.2.3: 配色行 DOM { partId: { text, swatch } }
+
+  function shadeHex(hex, f) { // "#rrggbb" → 各通道乘系数（地台压暗用）
+    var n = parseInt(hex.slice(1), 16);
+    var r = Math.min(255, Math.round(((n >> 16) & 255) * f));
+    var g = Math.min(255, Math.round(((n >> 8) & 255) * f));
+    var b = Math.min(255, Math.round((n & 255) * f));
+    return (r << 16) | (g << 8) | b;
+  }
+  function hexToRgba(hex, a) {
+    var n = parseInt(hex.slice(1), 16);
+    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+  }
 
   /* ---------- three 场景 ---------- */
   var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, preserveDrawingBuffer: true });
@@ -62,15 +77,17 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   /* ---------- 网格地台 ---------- */
   var gridGroup = new THREE.Group();
   scene.add(gridGroup);
-  function buildGrids(p) {
+  function buildGrids() {
     while (gridGroup.children.length) gridGroup.remove(gridGroup.children[0]);
-    var g1 = new THREE.GridHelper(26, 52, p.g1, p.g1);
+    // 1.2.3: 地台色可被界面配色覆盖（custom → 主色压暗 0.62；auto → 用预设派生色）
+    var gcol = uiColors.grid ? shadeHex(uiColors.grid, 0.62) : PRESETS[currentPreset].g1;
+    var g1 = new THREE.GridHelper(26, 52, gcol, gcol);
     g1.material.transparent = true; g1.material.opacity = 0.55;
-    var g2 = new THREE.GridHelper(26, 13, p.g1, p.g1);
+    var g2 = new THREE.GridHelper(26, 13, gcol, gcol);
     g2.material.transparent = true; g2.material.opacity = 0.9;
     gridGroup.add(g1); gridGroup.add(g2);
   }
-  buildGrids(PRESETS[currentPreset]);
+  buildGrids();
 
   /* ---------- 模型容器 ---------- */
   var modelRoot = new THREE.Group();
@@ -387,7 +404,64 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     });
   }
 
-  /* ---------- 配色（下拉框，1.2） ---------- */
+  /* ---------- 配色（下拉框，1.2；界面部件逐个配色，1.2.3） ---------- */
+  var UI_PARTS = [
+    { id: "ring1",  label: "① 号环" },
+    { id: "ring2",  label: "② 号环" },
+    { id: "ring3",  label: "③ 号环" },
+    { id: "title",  label: "标题文字" },
+    { id: "bars",   label: "底部进度条" },
+    { id: "corner", label: "四角框" },
+    { id: "grid",   label: "网格地台" },
+    { id: "scan",   label: "扫描线" },
+    { id: "status", label: "状态条" },
+    { id: "panel",  label: "控制面板" }
+  ];
+  function partColor(id) { return uiColors[id] || PRESETS[currentPreset].css; }
+  var scanEl = $("scanline"), titleRuleEl = $("titleRule");
+  function applyUIColors() {
+    // 三环（SVG 用 currentColor）
+    ringWraps.forEach(function (w, i) { w.style.color = partColor("ring" + (i + 1)); });
+    // 标题 + 标题下划线
+    var ct = partColor("title");
+    titleEl.style.color = ct;
+    titleEl.style.textShadow = "0 0 12px " + hexToRgba(ct, 0.45);
+    titleRuleEl.style.background = "linear-gradient(90deg, " + ct + ", transparent)";
+    titleRuleEl.style.boxShadow = "0 0 8px " + hexToRgba(ct, 0.45);
+    // 底部进度条
+    var cb = partColor("bars");
+    Array.prototype.forEach.call(barsEl.children, function (s) {
+      s.style.background = cb;
+      s.style.boxShadow = "0 0 6px " + hexToRgba(cb, 0.45);
+    });
+    // 四角框
+    var cc = hexToRgba(partColor("corner"), 0.45);
+    Array.prototype.forEach.call(document.querySelectorAll(".corner"), function (el) {
+      el.style.borderColor = cc;
+    });
+    // 网格地台（需重建）
+    buildGrids();
+    // 扫描线
+    scanEl.style.background = "repeating-linear-gradient(0deg, transparent 0 3px, " +
+      hexToRgba(partColor("scan"), 0.02) + " 3px 4px)";
+    // 状态条
+    var cst = partColor("status");
+    statusEl.style.color = hexToRgba(cst, 0.45);
+    statusEl.style.textShadow = "0 0 8px " + hexToRgba(cst, 0.18);
+    // 控制面板（覆盖 --ui 系变量：面板/输入框/拖放提示等 App 界面）
+    var cp = partColor("panel");
+    var rootStyle = document.documentElement.style;
+    rootStyle.setProperty("--ui", cp);
+    rootStyle.setProperty("--ui-dim", hexToRgba(cp, 0.45));
+    rootStyle.setProperty("--ui-faint", hexToRgba(cp, 0.18));
+    rootStyle.setProperty("--ui-line", hexToRgba(cp, 0.35));
+    // auto 部件的色块预览跟随当前生效色
+    UI_PARTS.forEach(function (part) {
+      var els = uiRowEls[part.id];
+      if (els && !uiColors[part.id]) els.swatch.value = partColor(part.id);
+    });
+  }
+
   function applyPreset(name) {
     currentPreset = name;
     var p = PRESETS[name];
@@ -395,11 +469,65 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     document.documentElement.style.setProperty("--holo", p.css);
     document.documentElement.style.setProperty("--holo-dim", p.css + "73");
     document.documentElement.style.setProperty("--holo-faint", p.css + "2e");
-    buildGrids(p);
+    // 模型线框跟随预设（1.2.3: 与界面部件配色相互独立）
     wireGroup.children.forEach(function (line) {
       line.material.color.setHex(p.main);
     });
+    // 1.2.3: 自定义了颜色的部件保持不变，auto 部件跟随预设
+    applyUIColors();
   }
+
+  /* ---------- 界面配色面板（1.2.3） ---------- */
+  (function buildUIColors() {
+    var list = $("uiColorList");
+    UI_PARTS.forEach(function (part) {
+      var row = document.createElement("div");
+      row.className = "uc-row";
+      row.innerHTML = '<label>' + part.label + '</label>' +
+        '<span class="uc-head"><input type="color" class="uc-swatch" data-part="' + part.id + '" value="' + PRESETS.cyan.css + '"></span>';
+      var inp = document.createElement("input");
+      inp.type = "text";
+      inp.className = "uc-inp";
+      inp.placeholder = "auto 或 #3fb9ff";
+      inp.dataset.part = part.id;
+      list.appendChild(row);
+      list.appendChild(inp);
+      uiRowEls[part.id] = { text: inp, swatch: row.querySelector(".uc-swatch") };
+    });
+    function validHex(v) {
+      v = (v || "").trim();
+      if (!v || v.toLowerCase() === "auto") return "";
+      return /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : null; // null=非法
+    }
+    function commit(partId, v) {
+      var hex = validHex(v);
+      var el = uiRowEls[partId];
+      el.text.classList.toggle("bad", hex === null);
+      if (hex === null) return;
+      if (hex) { uiColors[partId] = hex; el.text.value = hex; }
+      else { delete uiColors[partId]; if (!v) el.text.value = ""; } // auto/空 → 清自定义
+      el.swatch.value = partColor(partId);
+      applyUIColors();
+    }
+    Object.keys(uiRowEls).forEach(function (id) {
+      uiRowEls[id].text.oninput = function () { commit(id, this.value); };
+      uiRowEls[id].swatch.oninput = function () {
+        uiColors[id] = this.value;
+        uiRowEls[id].text.value = this.value;
+        uiRowEls[id].text.classList.remove("bad");
+        applyUIColors();
+      };
+    });
+    $("btnUIColorReset").onclick = function () {
+      uiColors = {};
+      Object.keys(uiRowEls).forEach(function (id) {
+        uiRowEls[id].text.value = "";
+        uiRowEls[id].text.classList.remove("bad");
+        uiRowEls[id].swatch.value = PRESETS[currentPreset].css;
+      });
+      applyUIColors();
+    };
+  })();
 
   /* ---------- 渲染方式 / 全彩氛围（1.2.2） ---------- */
   var bloomBase = 0.9; // 辉光滑杆值（氛围关时暂存）
@@ -481,6 +609,20 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   $("inpZup").onchange = function () {
     state.zup = this.checked;
     if (srcMeshes.length) { normalizeModel(); buildWireframe(); }
+  };
+  // 重置变换（1.2.3）：缩放/位移/Z 轴朝上/自转角度归零，滑杆同步回弹
+  $("btnReset").onclick = function () {
+    state.scale = 1; state.pos = { x: 0, y: 0, z: 0 };
+    state.zup = false;
+    modelRoot.rotation.y = 0;
+    $("inpScale").value = 100; $("valScale").textContent = "1.0";
+    ["PX", "PY", "PZ"].forEach(function (k) {
+      $("inp" + k).value = 0;
+      $("valP" + k.charAt(1)).textContent = "0.00";
+    });
+    $("inpZup").checked = false;
+    if (srcMeshes.length) normalizeModel();
+    statusEl.textContent = "TRANSFORM RESET";
   };
   $("inpSpeed").oninput = function () {
     state.speed = +this.value / 10; $("valSpeed").textContent = (+this.value / 10).toFixed(1);
