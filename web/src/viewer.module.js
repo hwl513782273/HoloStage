@@ -15,6 +15,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { buildRingSVG } from "./rings.js";
 import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
 import { createBackgroundLayer } from "./bgfx.js";
+import { collectSkeleton, createSkeletonView } from "./skeleton.js";
 
 (function () {
   "use strict";
@@ -91,7 +92,7 @@ import { createBackgroundLayer } from "./bgfx.js";
   var wraps = [1, 2, 3].map(function (n) { return document.getElementById("rw" + n); });
   var rings = CFG.rings || [{ style: "seg", x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false }, { style: "dial", x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false }, { style: "dash", x: 0, y: 0, z: 0, s: 86, p: 18, r: -12, w: 0, zu: false }];
   rings.forEach(function (rg, i) {
-    wraps[i].innerHTML = buildRingSVG(rg.style, i + 1, CFG.hideDot);
+    wraps[i].innerHTML = buildRingSVG(rg.style, i + 1, CFG.hideDot, rg);
     wraps[i].style.color = partColor("ring" + (i + 1));
   });
   function applyRings() {
@@ -210,7 +211,7 @@ import { createBackgroundLayer } from "./bgfx.js";
     });
     ring3dMeshes = [];
     rings.forEach(function (rg, i) {
-      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)), CFG.hideDot);
+      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)), CFG.hideDot, rg);
       var tex = new THREE.CanvasTexture(made.canvas);
       tex.anisotropy = 4;
       var mesh = new THREE.Mesh(
@@ -373,6 +374,7 @@ import { createBackgroundLayer } from "./bgfx.js";
   var root = new THREE.Group();
   scene.add(root);
   var mixer = null;
+  var skelView = null; // 1.3.5: 骨架叠加层（查看器只做「看得见」，不提供编辑）
   function b64ToBuf(s) {
     var bin = atob(s), len = bin.length, buf = new Uint8Array(len);
     for (var i = 0; i < len; i++) buf[i] = bin.charCodeAt(i);
@@ -405,6 +407,16 @@ import { createBackgroundLayer } from "./bgfx.js";
       if (CFG.anim && gltf.animations && gltf.animations.length) {
         mixer = new THREE.AnimationMixer(gltf.scene);
         mixer.clipAction(gltf.animations[0]).play();
+      }
+      // 1.3.5: 骨架叠加（八面体、穿透显示）。线框模式下蒙皮网格被隐藏也不影响 —— 骨架是独立层
+      if (CFG.skel && CFG.skel.show) {
+        var sv = null;
+        try { sv = collectSkeleton(gltf.scene); } catch (e) { sv = null; }
+        if (sv) {
+          skelView = createSkeletonView(sv, { color: preset.main, selectedColor: 0xffffff });
+          scene.add(skelView.mesh);
+          skelView.update();
+        }
       }
     }, function (err) {
       document.getElementById("hint").textContent = "模型解析失败: " + (err && err.message ? err.message : err);
@@ -440,6 +452,7 @@ import { createBackgroundLayer } from "./bgfx.js";
     tAcc += dt;
     if (bgLayer) bgLayer.tick(dt); // 1.3.4: 动态背景层
     if (mixer) mixer.update(dt);
+    if (skelView) skelView.update(); // 1.3.5: 骨架跟随当前姿态（放在 mixer 之后读到本帧姿态）
     updateCamKeys(dt); // 1.3.3: WASD / QE 移动镜头
     spin += (CFG.speed || 0.5) * dt;
     root.rotation.y = spin + (CFG.parallax ? mousePar.x * 0.22 : 0) +

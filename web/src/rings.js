@@ -3,6 +3,14 @@
  * 全部输出 600×600 viewBox，颜色用 currentColor（由容器 color 控制，配合 bloom 发光）
  */
 
+/* 数据弧上的环绕文字默认值（1.3.5：可由面板改写，见 opts.text） */
+export var DATA_TEXT = "HOLOSTAGE // SYS.LINK // 055-8821 // ONLINE";
+
+/* 用户输入要进 SVG 文本节点 → 必须转义，否则 & / < 会让整个环解析失败 */
+function escText(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export function RING_STYLES() {
   return [
     ["seg", "分段弧"],
@@ -19,7 +27,7 @@ export function ringStyleLabel(style) {
 }
 
 /* 六芒星顶点（r=190, cx=300）：(300,110) (464.5,395) (135.5,395) 及其 180° 翻转 */
-export function buildRingSVG(style, seed, hideDot) {
+export function buildRingSVG(style, seed, hideDot, opts) {
   var cx = 300;
   var uid = "holoRing" + seed + "_";
   var inner = "";
@@ -83,23 +91,26 @@ export function buildRingSVG(style, seed, hideDot) {
         '<circle cx="572" cy="300" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
       '</g>' + (hideDot ? '' : '<circle cx="300" cy="300" r="7" fill="currentColor" opacity="0.9"/>');
 
-  } else { /* data 数据弧（1.3.3：1/4 弧镜像成左右对称两条） */
+  } else { /* data 数据弧（1.3.5：1/4 弧绕圆心转 180° → 对角两段） */
     var dtp = uid + "lbl";
     // 每条弧取整角（90° / 60° / 25°），dasharray 按周长 2πr 折算：
     //   r262 → 1646.2，90° = 411.5 ｜ r234 → 1470.3，60° = 245.0 ｜ r206 → 1294.3，25° = 89.9
-    // 一条弧 + 它关于竖直轴（x=300）的镜像 → 整体左右对称，不再是单侧挂弧
-    var mir = function (s) { return '<g transform="translate(600,0) scale(-1,1)">' + s + '</g>'; };
+    // 第一条弧落在右下（3 点 → 6 点）；第二条绕圆心旋转 180°（点对称）→ 落在左上。
+    // 1.3.3 曾用竖直轴镜像（scale -1,1），两段会贴在一起拼成下半 1/2 —— 1.3.5 改为对角。
+    var opp = function (s) { return '<g transform="rotate(180 300 300)">' + s + '</g>'; };
     var arcOut = '<circle cx="300" cy="300" r="262" fill="none" stroke="currentColor" stroke-width="5" stroke-opacity="0.85" stroke-dasharray="411.5 1234.7" stroke-linecap="round"/>';
     var arcIn =
       '<circle cx="300" cy="300" r="234" fill="none" stroke="currentColor" stroke-width="2" stroke-opacity="0.6" stroke-dasharray="245 1225.3"/>' +
       '<circle cx="300" cy="300" r="206" fill="none" stroke="currentColor" stroke-width="8" stroke-opacity="0.28" stroke-dasharray="89.9 1204.4" stroke-linecap="round"/>' +
       '<circle cx="534" cy="300" r="4" fill="currentColor" opacity="0.9"/>';
     inner =
-      '<g class="ringSpin">' + arcOut + mir(arcOut) + '</g>' +
-      '<g class="ringSpinRev">' + arcIn + mir(arcIn) + '</g>' +
+      '<g class="ringSpin">' + arcOut + opp(arcOut) + '</g>' +
+      '<g class="ringSpinRev">' + arcIn + opp(arcIn) + '</g>' +
       '<g class="ringSpinSlow">' +
         '<path id="' + dtp + '" d="M 300 124 a 176 176 0 1 1 -0.01 0" fill="none"/>' +
-        '<text font-size="20" fill="currentColor" opacity="0.75" letter-spacing="4"><textPath href="#' + dtp + '">HOLOSTAGE // SYS.LINK // 055-8821 // ONLINE</textPath></text>' +
+        '<text font-size="20" fill="currentColor" opacity="0.75" letter-spacing="4"><textPath href="#' + dtp + '">' +
+          escText(opts && opts.text != null && opts.text !== "" ? opts.text : DATA_TEXT) +
+          '</textPath></text>' +
       '</g>';
   }
 

@@ -5,6 +5,8 @@
  * 返回 { canvas, spin }：spin = 环平面内自转角速度 rad/s（正=顺时针），移植自 rings.js 的 CSS 动画。
  */
 
+import { DATA_TEXT } from "./rings.js"; // 数据弧文字默认值：与 rings.js 共用同一份
+
 export var RING3D_SIZE = 3.8; // 世界直径：机位 dist≈4.875 + fov45 下 ≈ 画面高度 94%（与 1.0 一致）
 
 export function ring3dSpin(style) {
@@ -17,7 +19,7 @@ export function ring3dSpin(style) {
   }
 }
 
-export function drawRingCanvas(style, color, hideDot) {
+export function drawRingCanvas(style, color, hideDot, opts) {
   var cv = document.createElement("canvas");
   cv.width = 1200; cv.height = 1200;
   var x = cv.getContext("2d");
@@ -107,7 +109,7 @@ export function drawRingCanvas(style, color, hideDot) {
     x.strokeStyle = color; x.lineWidth = 1.5; x.globalAlpha = 1; x.stroke();
     if (!hideDot) dot(0, 0, 7, 0.9);
 
-  } else { /* data 数据弧（1.3.3：与 rings.js 同步，1/4 弧镜像成左右对称两条） */
+  } else { /* data 数据弧（1.3.5：与 rings.js 同步，1/4 弧绕圆心转 180° → 对角两段） */
     function dataArcs() {
       circle(262, 5, 0.85, [411.5, 1234.7]);
       circle(234, 2, 0.6, [245, 1225.3]);
@@ -116,10 +118,12 @@ export function drawRingCanvas(style, color, hideDot) {
     }
     x.lineCap = "round";
     dataArcs();
-    x.save(); x.scale(-1, 1); x.lineCap = "round"; dataArcs(); x.restore(); // 关于竖直轴镜像
+    x.save(); x.rotate(Math.PI); x.lineCap = "round"; dataArcs(); x.restore(); // 绕圆心转 180°（点对称 → 落在对角象限）
     x.lineCap = "butt";
-    // 文字环不镜像（字母会反写）
-    ringText("HOLOSTAGE // SYS.LINK // 055-8821 // ONLINE", 176, 20, 0.75, 16.4);
+    // 文字环不参与那 180° 旋转（转了会跑到左上且倒着写）
+    // 1.3.5：文字可由面板改写；步距按「约占 65% 圆周」自适应，长文字自动压紧
+    var dTxt = String((opts && opts.text) || DATA_TEXT) || DATA_TEXT;
+    ringText(dTxt, 176, 20, 0.75, Math.max(8, Math.min(16.4, 1105.8 * 0.65 / Math.max(1, dTxt.length))));
   }
 
   return { canvas: cv, spin: ring3dSpin(style) };

@@ -656,6 +656,33 @@ extension AppDelegate: WKNavigationDelegate {
                 }
             }
         }
+        // 1.3.5 骨骼自检：HOLO_SKEL_SELFTEST=1 → 载入模型后读页面侧诊断并打印，随后退出。
+        // 判定「骨骼能力在真实 WKWebView 里是否真的活了」：骨骼数/蒙皮数/骨骼树条目 +
+        // 面板文案（有无骨骼）+ 骨架可见性。纯只读，不参与业务逻辑。
+        if ProcessInfo.processInfo.environment["HOLO_SKEL_SELFTEST"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+                guard let self else { return }
+                let js = """
+                JSON.stringify({
+                  diag: window.holoSkelDiag ? window.holoSkelDiag() : null,
+                  skelInfo: (document.getElementById('skelInfo') || {}).textContent || '',
+                  skelTree: document.querySelectorAll('#boneList .boneItem').length,
+                  skelNoneShown: (function(){var e=document.getElementById('skelNone');
+                    return !!(e && e.offsetParent !== null && getComputedStyle(e).display !== 'none');})(),
+                  rowCount: document.querySelectorAll('#boneList > *').length,
+                  checked: (function(){var e=document.getElementById('inpSkel');return !!(e && e.checked);})()
+                })
+                """
+                self.webView.evaluateJavaScript(js) { res, err in
+                    if let err {
+                        print("[SKEL-SELFTEST] FAIL JS 错误: \(err)")
+                        exit(4)
+                    }
+                    print("[SKEL-SELFTEST] \(res as? String ?? "nil")")
+                    exit(0)
+                }
+            }
+        }
         if ProcessInfo.processInfo.environment["HOLO_DEBUG"] != nil {
             let dbg = """
             (function(){

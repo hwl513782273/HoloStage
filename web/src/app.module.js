@@ -24,6 +24,12 @@
  * 1.3.4: 背景从「一张静态贴图」升级为「一层动态场景」—— bgfx.js 相机跟随全屏 GLSL 层
  *        （数字雨下落 / 扫描带扫过 / 辉光呼吸 / 六边形与圆盘旋转），随配色主色与亮度；
  *        动效开关 + 速度可调；自定义背景图仍保留
+ * 1.3.5: 数据弧由「竖直轴镜像（两段相邻拼成下半 1/2）」改为「绕圆心转 180°（右下 + 左上对角）」；
+ *        数据弧文字可由面板改写（每环独立，含 XML 转义）；
+ *        新增骨骼能力（web/src/skeleton.js，Blender 风格八面体）：
+ *          ① 看得见 —— 骨架叠加显示（穿透、按层级渐变、跟随配色）+ 面板骨骼树
+ *          ② 动得了 —— 姿势模式点选某根骨、拖动旋转，蒙皮跟着变形；三轴滑杆精调 + 单骨/全部重置
+ *          ③ 演得出 —— 整体姿态打成关键帧，帧间 slerp 播放，并随导出网页带走（烘焙进 GLB 动画轨道）
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -41,9 +47,10 @@ import { MMDLoader } from "three/examples/jsm/loaders/MMDLoader.js";
 import { MMDAnimationHelper } from "three/examples/jsm/animation/MMDAnimationHelper.js";
 import { TinyUSDZLoader } from "./vendor/TinyUSDZLoader.js";
 import { TinyUSDZLoaderUtils } from "./vendor/TinyUSDZLoaderUtils.js";
-import { buildRingSVG, RING_STYLES } from "./rings.js";
+import { buildRingSVG, RING_STYLES, DATA_TEXT } from "./rings.js";
 import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
 import { createBackgroundLayer } from "./bgfx.js";
+import { collectSkeleton, createSkeletonView, boneTree } from "./skeleton.js";
 import initTinyUSDZNative from "./tinyusdz-glue.js";
 
 (function () {
@@ -289,7 +296,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     });
     ring3dMeshes = [];
     state.rings.forEach(function (rg, i) {
-      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)), state.hideCenterDot);
+      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)), state.hideCenterDot, rg);
       var tex = new THREE.CanvasTexture(made.canvas);
       tex.anisotropy = 4;
       var mesh = new THREE.Mesh(
@@ -363,10 +370,10 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     delay: 100,                          // GIF 每帧延时 ms
     ringMode: "free",                    // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）
     ringAnchor: "model",                 // 1.2.8: 经典模式环心 model=模型中点（跟随模型）| world=世界中心
-    rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5；z/zu 见 1.3.2）
-      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "seg" },
-      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "dial" },
-      { x: 0, y: 0, z: 0, s: 86,  p: 18, r: -12, w: 0, zu: false, style: "dash" }
+    rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5；z/zu 见 1.3.2；text=数据弧文字 1.3.5）
+      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "seg",  text: DATA_TEXT },
+      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "dial", text: DATA_TEXT },
+      { x: 0, y: 0, z: 0, s: 86,  p: 18, r: -12, w: 0, zu: false, style: "dash", text: DATA_TEXT }
     ]
   };
   var RING_DEFAULTS = [
@@ -615,6 +622,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       var res = buildWireframe();
       normalizeModel();
       setupAnimations(object3DorGeom.isBufferGeometry ? null : object3DorGeom, anims || [], kind);
+      // 1.3.5: 骨架 —— 纯几何（STL/OBJ/PLY）传 null，面板会显示「无骨骼」提示
+      setupSkeleton(object3DorGeom.isBufferGeometry ? null : object3DorGeom);
       var base = name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").toUpperCase();
       state.fileName = name;
       $("inpTitle").value = base;
@@ -649,7 +658,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   (function buildHUD() {
     // 1.2.5: 环内容由 rings.js 样式库生成（每环可独立切换样式）
     ringWraps.forEach(function (wrap, i) {
-      wrap.innerHTML = buildRingSVG(state.rings[i].style, i + 1, state.hideCenterDot);
+      wrap.innerHTML = buildRingSVG(state.rings[i].style, i + 1, state.hideCenterDot, state.rings[i]);
     });
     // 底部进度条
     for (var b = 0; b < 22; b++) {
@@ -1057,6 +1066,311 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       c.classList.toggle("on", c.dataset.v === nv);
     });
   }
+  /* ---------- 骨骼：可视化 / 姿态 / 关键帧（1.3.5）----------
+   * ① 看得见 —— 八面体骨架叠加显示 + 面板骨骼树（几何与拾取都在 skeleton.js）
+   * ② 动得了 —— 姿势模式下点选某根骨、拖动即旋转，蒙皮模型跟着变形；三轴滑杆可精调
+   * ③ 演得出 —— 当前整体姿态可打成关键帧，帧间 slerp 播放成一段动作，并随导出网页带走
+   * 姿态统一用「增量四元数 delta」表达：bone.quaternion = delta ⊗ baseQuat（在骨局部空间左乘），
+   * 于是拖动 / 三轴滑杆 / 关键帧三条路径都只改同一个 delta，互不打架、也能一键回到初始姿态。 */
+  var skelVis = null, skelView = null;
+  var skelBase = [], skelDelta = [], skelTree = [];
+  var skelSelected = -1, skelEditOn = false, boneDrag = null;
+  var skelFrames = [], skelDur = 3.0, skelT = 0, skelPlaying = false;
+  var _qA = new THREE.Quaternion(), _qB = new THREE.Quaternion(), _qC = new THREE.Quaternion();
+  var _qD = new THREE.Quaternion(), _qP = new THREE.Quaternion();
+  var _bRight = new THREE.Vector3(), _bUp = new THREE.Vector3(), _vTmp = new THREE.Vector3();
+  var _eulQ = new THREE.Euler();
+  var BONE_DRAG_K = 0.011; // 鼠标 1px ≈ 0.63°（约 160px 转 90°）
+
+  function skelActive() { return !!(skelVis && skelView && skelView.isVisible()); }
+
+  function setupSkeleton(root) {
+    if (skelView) { skelView.dispose(); skelView = null; }
+    skelVis = null; skelTree = []; skelSelected = -1; boneDrag = null;
+    skelFrames = []; skelPlaying = false; skelT = 0;
+    var noneEl = $("skelNone"), uiEl = $("skelUI");
+    if (root) { try { skelVis = collectSkeleton(root); } catch (e) { skelVis = null; } }
+    if (!skelVis) {
+      if (noneEl) noneEl.style.display = "";
+      if (uiEl) uiEl.style.display = "none";
+      skelEditOn = false;
+      var ie0 = $("inpSkelEdit"); if (ie0) ie0.checked = false;
+      return;
+    }
+    skelView = createSkeletonView(skelVis, { color: PRESETS[currentPreset].main, selectedColor: 0xffffff });
+    scene.add(skelView.mesh);
+    skelView.setVisible($("inpSkel") ? $("inpSkel").checked : true);
+    skelBase = []; skelDelta = [];
+    skelVis.bones.forEach(function (b) {
+      skelBase.push(b.quaternion.clone());
+      skelDelta.push(new THREE.Quaternion());
+    });
+    skelTree = boneTree(skelVis);
+    if (noneEl) noneEl.style.display = "none";
+    if (uiEl) uiEl.style.display = "";
+    buildBoneList();
+    var info = $("skelInfo");
+    if (info) info.textContent = "共 " + skelVis.bones.length + " 根骨 · " + skelVis.meshes.length + " 个蒙皮网格";
+    selectBone(-1);
+    refreshKeyUI();
+  }
+
+  /* --- 姿态：delta 应用 / 重置 / 滑杆同步 --- */
+  function applyBoneDelta(i) {
+    if (!skelVis || i < 0 || i >= skelVis.bones.length) return;
+    skelVis.bones[i].quaternion.copy(skelDelta[i]).multiply(skelBase[i]);
+  }
+  function resetBone(i) {
+    if (i < 0 || i >= skelDelta.length) return;
+    skelDelta[i].set(0, 0, 0, 1);
+    applyBoneDelta(i);
+    syncBoneSliders();
+  }
+  function resetAllPose() {
+    for (var i = 0; i < skelDelta.length; i++) { skelDelta[i].set(0, 0, 0, 1); applyBoneDelta(i); }
+    syncBoneSliders();
+  }
+  function syncBoneSliders() {
+    var vals = [0, 0, 0];
+    if (skelSelected >= 0 && skelDelta[skelSelected]) {
+      _eulQ.setFromQuaternion(skelDelta[skelSelected], "XYZ");
+      vals = [Math.round(_eulQ.x * 180 / Math.PI), Math.round(_eulQ.y * 180 / Math.PI), Math.round(_eulQ.z * 180 / Math.PI)];
+    }
+    ["RX", "RY", "RZ"].forEach(function (k, idx) {
+      var e = $("inpBone" + k); if (e) e.value = vals[idx];
+      var v = $("valBone" + k); if (v) v.textContent = vals[idx] + "°";
+    });
+  }
+  function applySlidersToBone() {
+    if (skelSelected < 0) return;
+    var x = +$("inpBoneRX").value, y = +$("inpBoneRY").value, z = +$("inpBoneRZ").value;
+    $("valBoneRX").textContent = x + "°";
+    $("valBoneRY").textContent = y + "°";
+    $("valBoneRZ").textContent = z + "°";
+    _eulQ.set(x * Math.PI / 180, y * Math.PI / 180, z * Math.PI / 180, "XYZ");
+    skelDelta[skelSelected].setFromEuler(_eulQ);
+    applyBoneDelta(skelSelected);
+  }
+  /* 拖动旋转：水平位移 → 绕屏幕上轴，竖直位移 → 绕屏幕右轴。
+   * 世界空间的增量要换算回「骨的父空间」再左乘（delta 定义在父空间）。 */
+  function dragBoneBy(dx, dy) {
+    if (skelSelected < 0 || !skelVis) return;
+    camera.updateMatrixWorld();
+    _bRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+    _bUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+    _qA.setFromAxisAngle(_bUp, -dx * BONE_DRAG_K);
+    _qB.setFromAxisAngle(_bRight, dy * BONE_DRAG_K);
+    _qC.copy(_qA).multiply(_qB);                 // 世界空间增量旋转
+    var par = skelVis.bones[skelSelected].parent;
+    if (par) {
+      par.getWorldQuaternion(_qP);
+      _qD.copy(_qP).invert();
+      _qA.copy(_qP).multiply(_qC).multiply(_qD); // qP⁻¹ ⊗ qW ⊗ qP
+    } else _qA.copy(_qC);
+    skelDelta[skelSelected].premultiply(_qA);
+    applyBoneDelta(skelSelected);
+    syncBoneSliders();
+  }
+
+  /* --- 骨骼树 --- */
+  function buildBoneList() {
+    var list = $("boneList");
+    if (!list || !skelVis) return;
+    var html = "";
+    skelTree.forEach(function (n) {
+      html += '<div class="boneItem" data-i="' + n.i + '" style="padding-left:' + Math.min(56, n.depth * 7) + 'px">' +
+        escapeHtml(n.name) + "</div>";
+    });
+    list.innerHTML = html;
+    Array.prototype.forEach.call(list.children, function (c) {
+      c.onclick = function () { selectBone(+this.dataset.i); };
+    });
+  }
+  function selectBone(i) {
+    skelSelected = (i >= 0 && skelVis && i < skelVis.bones.length) ? i : -1;
+    if (skelView) skelView.setSelected(skelSelected);
+    var el = $("valBone");
+    if (el) el.textContent = skelSelected >= 0 ? (skelVis.bones[skelSelected].name || ("bone" + skelSelected)) : "—";
+    var list = $("boneList");
+    if (list) {
+      Array.prototype.forEach.call(list.children, function (c) {
+        if (+c.dataset.i === skelSelected) c.classList.add("sel"); else c.classList.remove("sel");
+      });
+      var cur = list.querySelector('.boneItem[data-i="' + skelSelected + '"]');
+      if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
+    }
+    syncBoneSliders();
+  }
+
+  /* --- 关键帧（③）：整骨架快照帧，帧间 slerp --- */
+  function keyAdd() {
+    if (!skelVis) return;
+    var pose = skelDelta.map(function (q) { return q.clone(); });
+    for (var i = 0; i < skelFrames.length; i++) {
+      if (Math.abs(skelFrames[i].t - skelT) < 1e-3) {
+        skelFrames[i].pose = pose; refreshKeyUI();
+        statusEl.textContent = "已覆盖 " + skelT.toFixed(2) + "s 的关键帧（共 " + skelFrames.length + " 帧）";
+        return;
+      }
+    }
+    skelFrames.push({ t: skelT, pose: pose });
+    skelFrames.sort(function (a, b) { return a.t - b.t; });
+    refreshKeyUI();
+    statusEl.textContent = "已打关键帧 " + skelT.toFixed(2) + "s（共 " + skelFrames.length + " 帧）";
+  }
+  function keyDel() {
+    var n = skelFrames.length;
+    skelFrames = skelFrames.filter(function (f) { return Math.abs(f.t - skelT) >= 1e-3; });
+    refreshKeyUI();
+    statusEl.textContent = (n === skelFrames.length) ? "当前时间点没有关键帧" : ("已删除 " + skelT.toFixed(2) + "s 的关键帧");
+  }
+  function keyClear() {
+    skelFrames = []; skelPlaying = false;
+    var b = $("btnKeyPlay"); if (b) b.textContent = "播放";
+    refreshKeyUI();
+    statusEl.textContent = "已清空自定动作";
+  }
+  function sampleSkelInto(t, out) {
+    if (!skelFrames.length) return false;
+    var a = skelFrames[0], b = skelFrames[skelFrames.length - 1];
+    for (var i = 0; i < skelFrames.length; i++) {
+      if (skelFrames[i].t <= t + 1e-6) a = skelFrames[i];
+      if (skelFrames[i].t >= t - 1e-6) { b = skelFrames[i]; break; }
+    }
+    var u = (b.t > a.t) ? Math.max(0, Math.min(1, (t - a.t) / (b.t - a.t))) : 0;
+    for (var k = 0; k < out.length; k++) out[k].copy(a.pose[k]).slerp(b.pose[k], u);
+    return true;
+  }
+  function sampleSkel(t) {
+    if (!sampleSkelInto(t, skelDelta)) return;
+    for (var k = 0; k < skelDelta.length; k++) applyBoneDelta(k);
+  }
+  function refreshKeyUI() {
+    var el = $("keyInfo");
+    if (!el) return;
+    el.textContent = skelFrames.length
+      ? ("已打 " + skelFrames.length + " 帧：" + skelFrames.map(function (f) { return f.t.toFixed(2) + "s"; }).join(" / "))
+      : "先摆好姿势，再到目标时间点打帧";
+  }
+
+  /* --- 骨骼面板事件 --- */
+  if ($("inpSkel")) $("inpSkel").onchange = function () {
+    if (skelView) skelView.setVisible(this.checked);
+    statusEl.textContent = this.checked ? "骨架已显示" : "骨架已隐藏";
+  };
+  if ($("inpSkelEdit")) $("inpSkelEdit").onchange = function () {
+    if (this.checked && !skelVis) {
+      this.checked = false; skelEditOn = false;
+      statusEl.textContent = "当前模型没有骨骼，无法进入姿势模式（需要 GLB / FBX / PMX 这类自带骨架的模型）";
+      return;
+    }
+    skelEditOn = this.checked;
+    if (skelEditOn) {
+      // 自带动画每帧会覆盖骨骼 —— 摆姿势前先暂停，否则拖了也看不见
+      if (mixer && animAction && !anim.paused) {
+        anim.paused = true; animAction.paused = true;
+        var bp = $("btnPlay"); if (bp) bp.textContent = "播放";
+      }
+      statusEl.textContent = "姿势模式：点骨骼选中 · 拖动旋转 · 面板三轴微调（线框是静态快照，看变形请切「全彩（原材质）」）";
+    } else {
+      statusEl.textContent = "已退出姿势模式";
+    }
+  };
+  ["RX", "RY", "RZ"].forEach(function (k) {
+    var el = $("inpBone" + k);
+    if (el) el.oninput = applySlidersToBone;
+  });
+  if ($("btnBoneReset")) $("btnBoneReset").onclick = function () {
+    if (skelSelected < 0) { statusEl.textContent = "先在骨骼树或画面里选中一根骨"; return; }
+    resetBone(skelSelected);
+  };
+  if ($("btnBoneResetAll")) $("btnBoneResetAll").onclick = function () {
+    resetAllPose();
+    if (mmdHelper) mmdHelper.update(0); else if (mixer) mixer.update(0); // 让 IK/物理回到静止姿态
+    statusEl.textContent = "已重置全部姿势";
+  };
+  if ($("inpAnimDur")) $("inpAnimDur").oninput = function () {
+    skelDur = Math.max(0.5, +this.value / 10);
+    $("valAnimDur").textContent = skelDur.toFixed(1) + "s";
+  };
+  if ($("inpAnimT")) $("inpAnimT").oninput = function () {
+    skelPlaying = false;
+    var b = $("btnKeyPlay"); if (b) b.textContent = "播放";
+    skelT = (+this.value / 1000) * skelDur;
+    $("valAnimT").textContent = skelT.toFixed(2) + "s";
+    sampleSkel(skelT);
+    syncBoneSliders();
+  };
+  if ($("btnKeyAdd")) $("btnKeyAdd").onclick = keyAdd;
+  if ($("btnKeyDel")) $("btnKeyDel").onclick = keyDel;
+  if ($("btnKeyClear")) $("btnKeyClear").onclick = keyClear;
+  if ($("btnKeyPlay")) $("btnKeyPlay").onclick = function () {
+    if (!skelFrames.length) { statusEl.textContent = "还没有关键帧 —— 先在姿势模式摆好姿态，再打帧"; return; }
+    skelPlaying = !skelPlaying;
+    this.textContent = skelPlaying ? "暂停" : "播放";
+    if (skelPlaying) statusEl.textContent = "播放自定动作（" + skelFrames.length + " 帧 · " + skelDur.toFixed(1) + "s 循环）";
+  };
+
+  /* 自检钩子（1.3.5）：只读暴露骨架/姿态/关键帧状态，供黑盒验证脚本取证。
+   * 不参与任何业务逻辑，删掉也不影响功能。 */
+  window.holoSkelDiag = function () {
+    var out = { hasSkel: false };
+    if (!skelVis) return out;
+    var i = skelSelected >= 0 ? skelSelected : 0;
+    var q = skelDelta[i] || new THREE.Quaternion();
+    var b = skelVis.bones[i];
+    out.hasSkel = true;
+    out.boneCount = skelVis.bones.length;
+    out.meshCount = skelVis.meshes.length;
+    out.treeCount = skelTree.length;
+    out.rootCount = skelVis.roots.length;
+    out.selected = skelSelected;
+    out.selectedName = skelSelected >= 0 ? (b.name || "") : "";
+    out.delta = [q.x, q.y, q.z, q.w];
+    out.deltaDeg = 2 * Math.acos(Math.min(1, Math.abs(q.w))) * 180 / Math.PI;
+    out.boneQuat = [b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w];
+    out.visible = skelView ? skelView.isVisible() : false;
+    out.editOn = skelEditOn;
+    out.frames = skelFrames.length;
+    out.frameTimes = skelFrames.map(function (f) { return +f.t.toFixed(3); });
+    out.playing = skelPlaying;
+    out.t = +skelT.toFixed(3);
+    out.dur = skelDur;
+    return out;
+  };
+  window.holoResetPose = resetAllPose;
+  window.holoPickAt = function (clientX, clientY) { // 自检用：屏幕坐标 → 命中的骨骼索引（无则 -1）
+    if (!skelActive()) return -1;
+    var r = stageEl.getBoundingClientRect();
+    return skelView.pick(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1, camera);
+  };
+  // 自检用：第 i 根骨「骨长 20% 处」投影到屏幕的坐标（八面体最粗的位置附近，便于脚本定位）
+  window.holoBoneScreenPos = function (i) {
+    if (!skelVis || i < 0 || i >= skelVis.bones.length) return null;
+    var m = skelVis.bones[i].matrixWorld.elements;
+    var hx = m[12], hy = m[13], hz = m[14];
+    var tx = hx, ty = hy + 0.001, tz = hz;
+    var kids = skelVis.childIdx[i];
+    if (kids.length) {
+      var km = skelVis.bones[kids[0]].matrixWorld.elements;
+      tx = km[12]; ty = km[13]; tz = km[14];
+    } else {
+      var pi = skelVis.parentIdx[i];
+      if (pi >= 0) { // 末梢骨：沿父→自身方向延长
+        var pm = skelVis.bones[pi].matrixWorld.elements;
+        tx = hx * 2 - pm[12]; ty = hy * 2 - pm[13]; tz = hz * 2 - pm[14];
+      }
+    }
+    var u = 0.2;
+    _vTmp.set(hx + (tx - hx) * u, hy + (ty - hy) * u, hz + (tz - hz) * u).project(camera);
+    var r = stageEl.getBoundingClientRect();
+    return {
+      x: r.left + (_vTmp.x * 0.5 + 0.5) * r.width,
+      y: r.top + (-_vTmp.y * 0.5 + 0.5) * r.height,
+      name: skelVis.bones[i].name || ""
+    };
+  };
+
   var quickBar = $("quickBar"), qTimer = null;
   function pokeQuickBar(ms) {
     quickBar.classList.remove("off");
@@ -1197,7 +1511,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   $("inpHideDot").onchange = function () {
     state.hideCenterDot = this.checked;
     ringWraps.forEach(function (wrap, i) {
-      wrap.innerHTML = buildRingSVG(state.rings[i].style, i + 1, state.hideCenterDot);
+      wrap.innerHTML = buildRingSVG(state.rings[i].style, i + 1, state.hideCenterDot, state.rings[i]);
     });
     rebuildRing3D();
   };
@@ -1278,8 +1592,25 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     sel.onchange = function () {
       var n = +this.dataset.ring;
       state.rings[n - 1].style = this.value;
-      ringWraps[n - 1].innerHTML = buildRingSVG(this.value, n, state.hideCenterDot);
+      ringWraps[n - 1].innerHTML = buildRingSVG(this.value, n, state.hideCenterDot, state.rings[n - 1]);
       rebuildRing3D(); // 1.2.7: 经典模式下换样式要重建 3D 环纹理
+    };
+  });
+  /* 数据弧文字（1.3.5）：每环独立可改。输入即重建自由(SVG)版；经典(3D)版要重画 1200² 画布，
+   * 故做 160ms 防抖，避免连打字时反复重建三张纹理卡顿。 */
+  [1, 2, 3].forEach(function (n) {
+    var inp = $("inpArcText" + n);
+    if (!inp) return;
+    inp.value = state.rings[n - 1].text;
+    var tcTimer = null;
+    inp.oninput = function () {
+      var v = this.value;
+      clearTimeout(tcTimer);
+      tcTimer = setTimeout(function () {
+        state.rings[n - 1].text = v;
+        ringWraps[n - 1].innerHTML = buildRingSVG(state.rings[n - 1].style, n, state.hideCenterDot, state.rings[n - 1]);
+        rebuildRing3D();
+      }, 160);
     };
   });
   // 环模式（1.2.7）：自由变换 / 经典 1.0（3D 场景环）
@@ -1754,6 +2085,39 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     if (!tracks.length) return null;
     return new THREE.AnimationClip("vmd_baked", duration, tracks);
   }
+
+  /* ---------- 导出烘焙（1.3.5）：把自定关键帧动作逐帧采样成骨骼关键帧 ----------
+   * 导出网页里没有「编辑器」，delta 数据没法直接用 —— 直接把每个采样时刻的
+   * 绝对姿态（delta ⊗ baseQuat）写成 QuaternionKeyframeTrack，查看器照常播放。 */
+  function bakeSkelClip() {
+    if (!skelVis || skelFrames.length < 2) return null;
+    var bones = skelVis.bones;
+    var dur = Math.max(skelFrames[skelFrames.length - 1].t, skelDur);
+    if (!(dur > 0)) return null;
+    var n = Math.min(900, Math.max(2, Math.round(dur * 30)));
+    var times = new Float32Array(n + 1);
+    var quat = bones.map(function () { return new Float32Array((n + 1) * 4); });
+    var cur = skelDelta.map(function () { return new THREE.Quaternion(); });
+    for (var f = 0; f <= n; f++) {
+      var t = dur * f / n;
+      times[f] = t;
+      if (!sampleSkelInto(t, cur)) return null;
+      for (var bi = 0; bi < bones.length; bi++) {
+        _qA.copy(cur[bi]).multiply(skelBase[bi]);   // 绝对姿态 = delta ⊗ base
+        quat[bi][f * 4] = _qA.x; quat[bi][f * 4 + 1] = _qA.y;
+        quat[bi][f * 4 + 2] = _qA.z; quat[bi][f * 4 + 3] = _qA.w;
+      }
+    }
+    var tracks = [];
+    for (var k = 0; k < bones.length; k++) {
+      var nm = bones[k].name;
+      if (!nm || nm.indexOf(".") >= 0 || nm.indexOf("[") >= 0) continue; // 轨道名含分隔符无法绑定
+      if (trackMoved(quat[k], 4)) tracks.push(new THREE.QuaternionKeyframeTrack(nm + ".quaternion", times, quat[k]));
+    }
+    if (!tracks.length) return null;
+    return new THREE.AnimationClip("pose_baked", dur, tracks);
+  }
+
   $("btnHtml").onclick = function () {
     var btn = this;
     if (exporting || !srcMeshes.length) return;
@@ -1778,14 +2142,16 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       pulse: state.pulseOn, bloom: bloomBase, atmo: state.atmo,
       grid: gridGroup.visible, hud: $("inpHud").checked,
       anim: !!(mixer && animClips.length),
-      rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, z: r.z, s: r.s, p: r.p, r: r.r, w: r.w, zu: r.zu }; }),
+      rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, z: r.z, s: r.s, p: r.p, r: r.r, w: r.w, zu: r.zu, text: r.text }; }),
       ringMode: state.ringMode,
       ringAnchor: state.ringAnchor,
       // 1.3.4: 背景 —— img 为空则查看器侧重建动态层（motion/speed/bright 一并带上）
       bg: state.bgOn ? {
         bright: state.bgBright, img: bgDataURL || "",
         motion: state.bgMotion, speed: state.bgSpeed
-      } : null
+      } : null,
+      // 1.3.5: 骨架（查看器实现「看得见」这一层：显示八面体骨架，可开关；姿态随 GLB 走）
+      skel: (skelVis && skelView && skelView.isVisible()) ? { show: true } : null
     };
     // 1.3.0: PMX 场景先把 VMD 动作 + 物理逐帧烘焙成骨骼关键帧，随 GLB 一起走
     var exportClips = animClips.slice();
@@ -1794,6 +2160,12 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       var baked = null;
       try { baked = bakeMMDClip(); } catch (e) { baked = null; }
       if (baked) exportClips = [baked];
+    } else if (skelFrames.length >= 2) {
+      // 1.3.5: 自定关键帧动作（没有 VMD 时走这条）
+      statusEl.textContent = "BAKING POSE ANIMATION ...";
+      var bakedPose = null;
+      try { bakedPose = bakeSkelClip(); } catch (e) { bakedPose = null; }
+      if (bakedPose) exportClips = [bakedPose];
     }
     cfg.anim = !!exportClips.length;
     var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_holo.html";
@@ -1860,10 +2232,29 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   var camDrag = null;
   stageEl.addEventListener("mousedown", function (e) {
     if (e.button !== 0) return;
+    // 1.3.5: 姿势模式下先试骨骼拾取 —— 命中就拖骨骼，没命中才落到相机拖动
+    if (skelEditOn && skelActive() && !e.metaKey && !e.altKey) {
+      var r = stageEl.getBoundingClientRect();
+      var nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+      var ny = -((e.clientY - r.top) / r.height) * 2 + 1;
+      var hit = skelView.pick(nx, ny, camera);
+      if (hit >= 0) {
+        selectBone(hit);
+        boneDrag = { x: e.clientX, y: e.clientY };
+        statusEl.textContent = "拖动中：" + (skelVis.bones[hit].name || ("bone" + hit));
+        return;
+      }
+      selectBone(-1); // 点空白 = 取消选中，同时照常转相机
+    }
     camDrag = { x: e.clientX, y: e.clientY };
     if (e.metaKey || e.altKey) statusEl.textContent = "FREE ORBIT 360° — 不受地面限制（松开 ⌘/⌥ 回到受限视角）";
   });
   window.addEventListener("mousemove", function (e) {
+    if (boneDrag) { // 拖骨骼：独占左键，过程中不转相机
+      dragBoneBy(e.clientX - boneDrag.x, e.clientY - boneDrag.y);
+      boneDrag.x = e.clientX; boneDrag.y = e.clientY;
+      return;
+    }
     if (!camDrag) return;
     var dx = e.clientX - camDrag.x, dy = e.clientY - camDrag.y;
     camDrag = { x: e.clientX, y: e.clientY };
@@ -1873,7 +2264,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     camFree = false; camera.up.set(0, 1, 0); // 受限视角的 up 恒为世界 up
     updateCamera();
   });
-  window.addEventListener("mouseup", function () { camDrag = null; });
+  window.addEventListener("mouseup", function () { camDrag = null; boneDrag = null; });
   stageEl.addEventListener("contextmenu", function (e) {
     e.preventDefault();
     camYaw = CAM_HOME.yaw; camPitch = CAM_HOME.pitch; camDist = CAM_HOME.dist;
@@ -1932,6 +2323,19 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       var p = clip.duration ? Math.min(1, animAction.time / clip.duration) : 0;
       $("inpAProg").value = Math.round(p * 1000);
       $("valAProg").textContent = Math.round(p * 100) + "%";
+    }
+    // 1.3.5: 骨架 —— 关键帧动作推进 + 实例矩阵刷新
+    // （放在 mixer/helper 之后，才能读到本帧最终姿态；导出时也照跑，帧序列里骨架跟着动）
+    if (skelView && skelView.isVisible()) {
+      if (skelPlaying && skelFrames.length) {
+        skelT += dt;
+        if (skelT > skelDur) skelT -= skelDur;
+        sampleSkel(skelT);
+        var pEl = $("inpAnimT"), tEl = $("valAnimT");
+        if (pEl) pEl.value = Math.round(skelT / skelDur * 1000);
+        if (tEl) tEl.textContent = skelT.toFixed(2) + "s";
+      }
+      skelView.update();
     }
     if (!exporting) {
       updateCamKeys(dt); // 1.3.3: WASD 平移 / QE 推拉（导出中不响应）
