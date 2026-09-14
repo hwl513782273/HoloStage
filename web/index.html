@@ -15,13 +15,17 @@
   html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
   body { font-family: "SF Mono", Menlo, monospace; color: var(--holo); }
 
+  /* ---------- 舞台（按所选比例居中） ---------- */
+  #stage { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); overflow: hidden; background: #000; }
   #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
   /* ---------- HUD 叠加层 ---------- */
-  #hud { position: absolute; inset: 0; pointer-events: none; }
-  #ringWrap { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
-  #ringA { animation: spin 24s linear infinite; }
-  #ringB { animation: spin 40s linear infinite reverse; }
+  #hud { position: absolute; inset: 0; pointer-events: none; perspective: 1400px; }
+  .ringWrap { position: absolute; left: 50%; top: 50%; transform-style: preserve-3d; color: var(--holo); }
+  .ringWrap svg { display: block; width: 100%; height: 100%; overflow: visible; }
+  .ringSpin  { animation: spin 24s linear infinite; }
+  .ringSpinRev { animation: spin 40s linear infinite reverse; }
+  .ringSpinSlow { animation: spin 56s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   #title {
@@ -75,7 +79,7 @@
 
   /* ---------- 控制面板 ---------- */
   #panel {
-    position: absolute; right: 0; top: 0; bottom: 0; width: 236px;
+    position: absolute; right: 0; top: 0; bottom: 0; width: 248px;
     background: var(--panel-bg); border-left: 1px solid var(--panel-line);
     backdrop-filter: blur(6px); z-index: 30;
     padding: 14px 14px 20px; overflow-y: auto;
@@ -87,14 +91,16 @@
   .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; font-size: 12px; }
   .row label { color: var(--holo-dim); }
   input[type=range] { width: 110px; accent-color: var(--holo); }
-  input[type=text] {
+  input[type=text], input[type=number], select {
     width: 100%; background: rgba(63,185,255,0.08); border: 1px solid var(--panel-line);
     color: var(--holo); padding: 5px 8px; font-family: inherit; font-size: 12px; letter-spacing: 0.1em;
   }
   input[type=checkbox] { accent-color: var(--holo); }
-  .swatches { display: flex; gap: 8px; margin: 8px 0; }
-  .sw { width: 26px; height: 26px; border-radius: 4px; cursor: pointer; border: 2px solid transparent; }
-  .sw.on { border-color: #fff; }
+  .duo { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+  .duo input { width: 50%; }
+  details.ring { margin: 6px 0; border: 1px solid var(--panel-line); padding: 4px 8px; }
+  details.ring summary { cursor: pointer; font-size: 12px; letter-spacing: 0.2em; color: var(--holo); outline: none; }
+  details.ring[open] summary { border-bottom: 1px solid var(--panel-line); padding-bottom: 6px; margin-bottom: 4px; }
   button {
     display: block; width: 100%; margin: 8px 0; padding: 8px;
     background: rgba(63,185,255,0.10); border: 1px solid var(--panel-line);
@@ -114,16 +120,19 @@
 </style>
 </head>
 <body>
-  <canvas id="gl"></canvas>
-
-  <div id="hud">
-    <div id="ringWrap"></div>
-    <div id="title">HOLOSTAGE</div>
-    <div id="titleRule"></div>
-    <div id="bars"></div>
-    <div class="corner" id="c-tl"></div><div class="corner" id="c-tr"></div>
-    <div class="corner" id="c-bl"></div><div class="corner" id="c-br"></div>
-    <div id="scanline"></div>
+  <div id="stage">
+    <canvas id="gl"></canvas>
+    <div id="hud">
+      <div class="ringWrap" id="ringWrap1"></div>
+      <div class="ringWrap" id="ringWrap2"></div>
+      <div class="ringWrap" id="ringWrap3"></div>
+      <div id="title">HOLOSTAGE</div>
+      <div id="titleRule"></div>
+      <div id="bars"></div>
+      <div class="corner" id="c-tl"></div><div class="corner" id="c-tr"></div>
+      <div class="corner" id="c-bl"></div><div class="corner" id="c-br"></div>
+      <div id="scanline"></div>
+    </div>
   </div>
 
   <div id="status">NO MODEL LOADED — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP</div>
@@ -135,8 +144,22 @@
     <button id="btnOpen">打开模型文件</button>
     <div class="row"><label>标题</label></div>
     <input type="text" id="inpTitle" value="HOLOSTAGE">
+    <div class="row"><label>位置 X</label><span id="valPX">0.00</span></div>
+    <input type="range" id="inpPX" min="-200" max="200" value="0" style="width:100%">
+    <div class="row"><label>位置 Y</label><span id="valPY">0.00</span></div>
+    <input type="range" id="inpPY" min="-200" max="200" value="0" style="width:100%">
+    <div class="row"><label>位置 Z</label><span id="valPZ">0.00</span></div>
+    <input type="range" id="inpPZ" min="-200" max="200" value="0" style="width:100%">
+
     <h2>全息风格</h2>
-    <div class="swatches" id="swatches"></div>
+    <div class="row"><label>配色</label></div>
+    <select id="selPreset">
+      <option value="cyan" selected>青蓝（默认）</option>
+      <option value="green">荧光绿（暴龙机）</option>
+      <option value="red">红</option>
+      <option value="gold">金</option>
+      <option value="ice">冰蓝</option>
+    </select>
     <div class="row"><label>线框模式</label><span id="valMode">全网格</span></div>
     <button id="btnMode">切换 边缘 / 全网格</button>
     <div class="row"><label>折痕阈值</label><span id="valAngle">32°</span></div>
@@ -146,14 +169,90 @@
     <div class="row"><label>模型缩放</label><span id="valScale">1.0</span></div>
     <input type="range" id="inpScale" min="30" max="250" value="100" style="width:100%">
     <div class="row"><label>Z 轴朝上</label><input type="checkbox" id="inpZup"></div>
+
     <h2>场景</h2>
     <div class="row"><label>转速</label><span id="valSpeed">0.5</span></div>
     <input type="range" id="inpSpeed" min="0" max="20" value="5" style="width:100%">
     <div class="row"><label>网格地台</label><input type="checkbox" id="inpGrid" checked></div>
     <div class="row"><label>HUD 叠加层</label><input type="checkbox" id="inpHud" checked></div>
+
+    <h2>全息环 ①（分段弧）</h2>
+    <details class="ring" open>
+      <summary>① 号环</summary>
+      <div class="row"><label>位置 X</label><span id="valR1X">0</span></div>
+      <input type="range" class="ringCtl" data-ring="1" data-k="x" min="-500" max="500" value="0" style="width:100%">
+      <div class="row"><label>位置 Y</label><span id="valR1Y">0</span></div>
+      <input type="range" class="ringCtl" data-ring="1" data-k="y" min="-500" max="500" value="0" style="width:100%">
+      <div class="row"><label>大小 %</label><span id="valR1S">100</span></div>
+      <input type="range" class="ringCtl" data-ring="1" data-k="s" min="20" max="160" value="100" style="width:100%">
+      <div class="row"><label>俯仰角</label><span id="valR1P">0°</span></div>
+      <input type="range" class="ringCtl" data-ring="1" data-k="p" min="-80" max="80" value="0" style="width:100%">
+      <div class="row"><label>滚转角</label><span id="valR1R">0°</span></div>
+      <input type="range" class="ringCtl" data-ring="1" data-k="r" min="-80" max="80" value="0" style="width:100%">
+    </details>
+    <h2>全息环 ②（刻度盘）</h2>
+    <details class="ring" open>
+      <summary>② 号环</summary>
+      <div class="row"><label>位置 X</label><span id="valR2X">0</span></div>
+      <input type="range" class="ringCtl" data-ring="2" data-k="x" min="-500" max="500" value="0" style="width:100%">
+      <div class="row"><label>位置 Y</label><span id="valR2Y">0</span></div>
+      <input type="range" class="ringCtl" data-ring="2" data-k="y" min="-500" max="500" value="0" style="width:100%">
+      <div class="row"><label>大小 %</label><span id="valR2S">100</span></div>
+      <input type="range" class="ringCtl" data-ring="2" data-k="s" min="20" max="160" value="100" style="width:100%">
+      <div class="row"><label>俯仰角</label><span id="valR2P">0°</span></div>
+      <input type="range" class="ringCtl" data-ring="2" data-k="p" min="-80" max="80" value="0" style="width:100%">
+      <div class="row"><label>滚转角</label><span id="valR2R">0°</span></div>
+      <input type="range" class="ringCtl" data-ring="2" data-k="r" min="-80" max="80" value="0" style="width:100%">
+    </details>
+    <h2>全息环 ③（虚线环）</h2>
+    <details class="ring">
+      <summary>③ 号环</summary>
+      <div class="row"><label>位置 X</label><span id="valR3X">0</span></div>
+      <input type="range" class="ringCtl" data-ring="3" data-k="x" min="-500" max="500" value="0" style="width:100%">
+      <div class="row"><label>位置 Y</label><span id="valR3Y">0</span></div>
+      <input type="range" class="ringCtl" data-ring="3" data-k="y" min="-500" max="500" value="0" style="width:100%">
+      <div class="row"><label>大小 %</label><span id="valR3S">86</span></div>
+      <input type="range" class="ringCtl" data-ring="3" data-k="s" min="20" max="160" value="86" style="width:100%">
+      <div class="row"><label>俯仰角</label><span id="valR3P">18°</span></div>
+      <input type="range" class="ringCtl" data-ring="3" data-k="p" min="-80" max="80" value="18" style="width:100%">
+      <div class="row"><label>滚转角</label><span id="valR3R">-12°</span></div>
+      <input type="range" class="ringCtl" data-ring="3" data-k="r" min="-80" max="80" value="-12" style="width:100%">
+    </details>
+
+    <h2>画面</h2>
+    <div class="row"><label>画面比例</label></div>
+    <select id="selRatio">
+      <option value="16:9">16:9</option>
+      <option value="3:2" selected>3:2（参考图）</option>
+      <option value="4:3">4:3</option>
+      <option value="1:1">1:1</option>
+      <option value="9:16">9:16 竖屏</option>
+      <option value="custom">自定义…</option>
+    </select>
+    <div class="duo" id="ratioCustom" style="display:none">
+      <input type="number" id="ratioW" value="3" min="1" max="99">
+      <span>:</span>
+      <input type="number" id="ratioH" value="2" min="1" max="99">
+    </div>
+    <div class="row"><label>导出分辨率</label></div>
+    <select id="selRes">
+      <option value="720">720p</option>
+      <option value="1080" selected>1080p</option>
+      <option value="1440">2K</option>
+      <option value="2160">4K</option>
+      <option value="custom">自定义…</option>
+    </select>
+    <div class="duo" id="resCustom" style="display:none">
+      <input type="number" id="resW" value="1920" min="64" max="7680">
+      <span>×</span>
+      <input type="number" id="resH" value="1080" min="64" max="7680">
+    </div>
+
     <h2>导出</h2>
-    <div class="row"><label>GIF 帧数</label><span id="valFrames">24</span></div>
-    <input type="range" id="inpFrames" min="8" max="60" value="24" style="width:100%">
+    <div class="row"><label>帧数</label><span id="valFrames">24</span></div>
+    <input type="range" id="inpFrames" min="4" max="120" value="24" style="width:100%">
+    <div class="row"><label>帧延时 ms</label><span id="valDelay">100</span></div>
+    <input type="range" id="inpDelay" min="20" max="500" value="100" style="width:100%">
     <button id="btnGif">导出 GIF 动画</button>
     <button id="btnSeq">导出 PNG 帧序列</button>
     <button id="btnShot">导出当前帧 PNG</button>

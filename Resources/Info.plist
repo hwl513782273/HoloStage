@@ -2,26 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDisplayName</key>
+	<string>HoloStage</string>
 	<key>CFBundleExecutable</key>
 	<string>HoloStage</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.banqiu.holostage</string>
 	<key>CFBundleName</key>
 	<string>HoloStage</string>
-	<key>CFBundleDisplayName</key>
-	<string>HoloStage</string>
-	<key>CFBundleShortVersionString</key>
-	<string>1.1-beta</string>
-	<key>CFBundleVersion</key>
-	<string>2</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
-	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>12.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.2-beta</string>
+	<key>CFBundleVersion</key>
+	<string>3</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.graphics-design</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

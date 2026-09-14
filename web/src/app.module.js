@@ -1,5 +1,6 @@
-/* HoloStage 1.1 — 3D 模型 → 线框全息加载动画（ES module 版，esbuild 打包）
- * 新增：USDZ（tinyusdz WASM，支持 usda/usdc）、GLB、ZIP 由原生层解压后进入本文件
+/* HoloStage 1.2 — 3D 模型 → 线框全息加载动画（ES module 版，esbuild 打包）
+ * 1.1: USDZ（tinyusdz usdc/usda）+ GLB + ZIP（原生解压后进入）
+ * 1.2: 模型 XYZ 位移 / 画面比例 / 导出分辨率 / 帧率 / 配色下拉 / 三环独立变换
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -22,7 +23,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   /* ---------- DOM ---------- */
   var $ = function (id) { return document.getElementById(id); };
   var canvas = $("gl"), statusEl = $("status"), errEl = $("err");
-  var titleEl = $("title"), barsEl = $("bars"), ringWrap = $("ringWrap");
+  var titleEl = $("title"), barsEl = $("bars"), stageEl = $("stage");
 
   /* ---------- 原生层状态回调 ---------- */
   window.holoNativeStatus = function (msg, isErr) {
@@ -78,7 +79,14 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   var srcMeshes = [];
   var state = {
     speed: 0.5, mode: "wire", angle: 32, scale: 1.0, zup: false,
-    gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE"
+    gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
+    pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
+    delay: 100,                          // GIF 每帧延时 ms
+    rings: [                             // 三环独立变换
+      { x: 0, y: 0, s: 100, p: 0, r: 0 },
+      { x: 0, y: 0, s: 100, p: 0, r: 0 },
+      { x: 0, y: 0, s: 86,  p: 18, r: -12 }
+    ]
   };
 
   /* ---------- 线框构建 ---------- */
@@ -143,6 +151,10 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       var c2 = box2.getCenter(new THREE.Vector3());
       modelRoot.position.x = -c2.x; modelRoot.position.z = -c2.z;
     }
+    // 用户位移（1.2）
+    modelRoot.position.x += state.pos.x;
+    modelRoot.position.y += state.pos.y;
+    modelRoot.position.z += state.pos.z;
   }
 
   /* ---------- USDZ（tinyusdz WASM） ---------- */
@@ -237,7 +249,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function showError(msg) { errEl.textContent = msg; errEl.style.display = "block"; }
   function hideError() { errEl.style.display = "none"; }
 
-  /* ---------- HUD ---------- */
+  /* ---------- HUD：三环 + 底部进度条 ---------- */
+  var ringWraps = [$("ringWrap1"), $("ringWrap2"), $("ringWrap3")];
   (function buildHUD() {
     var NS = "http://www.w3.org/2000/svg";
     function mk(tag, attrs) {
@@ -245,7 +258,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       for (var k in attrs) el.setAttribute(k, attrs[k]);
       return el;
     }
-    var svgA = mk("svg", { id: "ringA", viewBox: "0 0 600 600", width: "100%" });
+    // ① 分段弧环
+    var svgA = mk("svg", { viewBox: "0 0 600 600", "class": "ringSpin" });
     var cx = 300, R1 = 272, R2 = 232;
     var segs = 22;
     for (var i = 0; i < segs; i++) {
@@ -256,25 +270,41 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
            " A " + R1 + " " + R1 + " 0 " + large + " 1 " + (cx + R1 * Math.cos(a1)) + " " + (cx + R1 * Math.sin(a1)) +
            " L " + (cx + R2 * Math.cos(a1)) + " " + (cx + R2 * Math.sin(a1)) +
            " A " + R2 + " " + R2 + " 0 " + large + " 0 " + (cx + R2 * Math.cos(a0)) + " " + (cx + R2 * Math.sin(a0)) + " Z",
-        fill: "rgba(63,185,255,0.16)"
+        fill: "currentColor", opacity: 0.16
       });
       svgA.appendChild(p);
     }
-    ringWrap.appendChild(svgA);
-    var svgB = mk("svg", { id: "ringB", viewBox: "0 0 600 600", width: "100%",
-      style: "position:absolute;left:0;top:0" });
+    ringWraps[0].appendChild(svgA);
+    // ② 刻度环
+    var svgB = mk("svg", { viewBox: "0 0 600 600", "class": "ringSpinRev" });
     svgB.appendChild(mk("circle", { cx: cx, cy: cx, r: 210, fill: "none",
-      stroke: "rgba(63,185,255,0.35)", "stroke-width": 1.5 }));
+      stroke: "currentColor", "stroke-width": 1.5, "stroke-opacity": 0.35 }));
     for (var t = 0; t < 60; t++) {
       var ta = (t / 60) * Math.PI * 2, r0 = 196, r1 = t % 5 === 0 ? 182 : 189;
       svgB.appendChild(mk("line", {
         x1: cx + r0 * Math.cos(ta), y1: cx + r0 * Math.sin(ta),
         x2: cx + r1 * Math.cos(ta), y2: cx + r1 * Math.sin(ta),
-        stroke: "rgba(63,185,255,0.4)", "stroke-width": t % 5 === 0 ? 2.5 : 1
+        stroke: "currentColor", "stroke-width": t % 5 === 0 ? 2.5 : 1, "stroke-opacity": 0.4
       }));
     }
-    svgB.appendChild(mk("circle", { cx: cx, cy: cx, r: 3, fill: "rgba(63,185,255,0.7)" }));
-    ringWrap.appendChild(svgB);
+    svgB.appendChild(mk("circle", { cx: cx, cy: cx, r: 3, fill: "currentColor", opacity: 0.7 }));
+    ringWraps[1].appendChild(svgB);
+    // ③ 虚线环（1.2 新增）
+    var svgC = mk("svg", { viewBox: "0 0 600 600", "class": "ringSpinSlow" });
+    svgC.appendChild(mk("circle", { cx: cx, cy: cx, r: 250, fill: "none",
+      stroke: "currentColor", "stroke-width": 2, "stroke-opacity": 0.5, "stroke-dasharray": "18 12" }));
+    svgC.appendChild(mk("circle", { cx: cx, cy: cx, r: 262, fill: "none",
+      stroke: "currentColor", "stroke-width": 1, "stroke-opacity": 0.22, "stroke-dasharray": "4 8" }));
+    for (var q = 0; q < 4; q++) {
+      var qa = (q / 4) * Math.PI * 2 + Math.PI / 4;
+      svgC.appendChild(mk("rect", {
+        x: cx + 250 * Math.cos(qa) - 5, y: cx + 250 * Math.sin(qa) - 5,
+        width: 10, height: 10, fill: "currentColor", opacity: 0.55,
+        transform: "rotate(" + (qa * 180 / Math.PI + 45) + " " + (cx + 250 * Math.cos(qa)) + " " + (cx + 250 * Math.sin(qa)) + ")"
+      }));
+    }
+    ringWraps[2].appendChild(svgC);
+    // 底部进度条
     for (var b = 0; b < 22; b++) {
       var sp = document.createElement("span");
       sp.style.height = (6 + (b % 4) * 5) + "px";
@@ -283,6 +313,19 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     }
   })();
 
+  function applyRings() {
+    var base = Math.min(stageW, stageH) * 0.94;
+    state.rings.forEach(function (rg, i) {
+      var wrap = ringWraps[i];
+      var size = base * rg.s / 100;
+      wrap.style.width = size + "px";
+      wrap.style.height = size + "px";
+      wrap.style.transform = "translate(calc(-50% + " + rg.x + "px), calc(-50% + " + rg.y + "px))" +
+        " rotateX(" + rg.p + "deg) rotateZ(" + rg.r + "deg)";
+    });
+  }
+
+  /* ---------- 配色（下拉框，1.2） ---------- */
   function applyPreset(name) {
     currentPreset = name;
     var p = PRESETS[name];
@@ -293,22 +336,35 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     wireGroup.children.forEach(function (line) {
       line.material.color.setHex(p.main);
     });
-    Array.prototype.forEach.call(document.querySelectorAll(".sw"), function (el) {
-      el.classList.toggle("on", el.dataset.p === name);
-    });
   }
-  (function buildSwatches() {
-    var wrap = $("swatches");
-    Object.keys(PRESETS).forEach(function (k) {
-      var d = document.createElement("div");
-      d.className = "sw" + (k === currentPreset ? " on" : "");
-      d.dataset.p = k;
-      d.style.background = PRESETS[k].css;
-      d.title = k;
-      d.onclick = function () { applyPreset(k); };
-      wrap.appendChild(d);
-    });
-  })();
+
+  /* ---------- 舞台尺寸（按比例，1.2） ---------- */
+  var stageW = 960, stageH = 640;
+  function currentRatio() {
+    var v = $("selRatio").value;
+    if (v === "custom") {
+      var w = Math.max(1, Math.round(+$("ratioW").value || 1));
+      var h = Math.max(1, Math.round(+$("ratioH").value || 1));
+      return [w, h];
+    }
+    var seg = v.split(":");
+    return [+seg[0], +seg[1]];
+  }
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+  function resize() {
+    var r = currentRatio();
+    var W = window.innerWidth, H = window.innerHeight;
+    var s = Math.min(W / r[0], H / r[1]);
+    stageW = Math.max(64, Math.floor(s * r[0]));
+    stageH = Math.max(64, Math.floor(s * r[1]));
+    stageEl.style.width = stageW + "px";
+    stageEl.style.height = stageH + "px";
+    renderer.setSize(stageW, stageH, false);
+    composer.setSize(stageW, stageH);
+    camera.aspect = stageW / stageH;
+    camera.updateProjectionMatrix();
+    applyRings();
+  }
 
   /* ---------- 控制面板事件 ---------- */
   $("btnOpen").onclick = function () {
@@ -350,6 +406,41 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   $("inpHud").onchange = function () {
     $("hud").style.display = this.checked ? "" : "none";
   };
+  // 模型位移（1.2）
+  ["PX", "PY", "PZ"].forEach(function (k) {
+    $("inp" + k).oninput = function () {
+      var axis = k.charAt(1).toLowerCase();
+      state.pos[axis] = +this.value / 100;
+      $("valP" + k.charAt(1)).textContent = state.pos[axis].toFixed(2);
+      if (srcMeshes.length) normalizeModel();
+    };
+  });
+  // 配色下拉（1.2）
+  $("selPreset").onchange = function () { applyPreset(this.value); };
+  // 三环控制（1.2）
+  Array.prototype.forEach.call(document.querySelectorAll(".ringCtl"), function (el) {
+    el.oninput = function () {
+      var n = +this.dataset.ring, k = this.dataset.k;
+      state.rings[n - 1][k] = +this.value;
+      var idMap = { x: "valR" + n + "X", y: "valR" + n + "Y", s: "valR" + n + "S", p: "valR" + n + "P", r: "valR" + n + "R" };
+      $(idMap[k]).textContent = (k === "p" || k === "r") ? this.value + "°" : this.value;
+      applyRings();
+    };
+  });
+  // 画面比例 / 导出分辨率（1.2）
+  $("selRatio").onchange = function () {
+    $("ratioCustom").style.display = this.value === "custom" ? "flex" : "none";
+    resize();
+  };
+  ["ratioW", "ratioH"].forEach(function (id) {
+    $(id).oninput = function () { if ($("selRatio").value === "custom") resize(); };
+  });
+  $("selRes").onchange = function () {
+    $("resCustom").style.display = this.value === "custom" ? "flex" : "none";
+  };
+  // 导出参数（1.2）
+  $("inpFrames").oninput = function () { $("valFrames").textContent = this.value; };
+  $("inpDelay").oninput = function () { state.delay = +this.value; $("valDelay").textContent = this.value; };
   document.getElementById("panelToggle").onclick = function () {
     document.getElementById("panel").classList.remove("hidden");
   };
@@ -388,6 +479,26 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     })();
   }
 
+  /* ---------- 导出尺寸（分辨率 + 比例，1.2） ---------- */
+  function exportSize() {
+    var rv = $("selRes").value;
+    if (rv === "custom") {
+      var w = clamp(Math.round(+$("resW").value || 1920), 64, 7680);
+      var h = clamp(Math.round(+$("resH").value || 1080), 64, 7680);
+      return [w, h];
+    }
+    var h = +rv, r = currentRatio();
+    var ew = Math.max(64, Math.round(h * r[0] / r[1] / 2) * 2);
+    return [ew, h];
+  }
+  function withExportSize(w, h, work) {
+    renderer.setSize(w, h, false);
+    composer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    work(function () { resize(); }); // 恢复
+  }
+
   /* ---------- 导出 GIF ---------- */
   function bundleWorkerPath() {
     return location.pathname.replace(/[^/]*$/, "") + "lib/gif.worker.js";
@@ -398,27 +509,29 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     exporting = true; this.disabled = true; this.textContent = "GIF 生成中...";
     statusEl.textContent = "EXPORTING GIF ...";
     var count = +$("inpFrames").value;
-    var scale = Math.min(1, 560 / canvas.clientWidth);
-    var w = Math.round(canvas.clientWidth * scale), h = Math.round(canvas.clientHeight * scale);
+    var es = exportSize();
     var workerSrc = bridge ? "holo://f/" + encodeURI(bundleWorkerPath()).replace(/#/g, "%23") : "lib/gif.worker.js";
     fetch(workerSrc).then(function (r) { return r.text(); }).then(function (code) {
       var workerUrl = URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
-      var gif = new GIF({ workers: 1, quality: 8, width: w, height: h, workerScript: workerUrl });
-      captureFrames(count, function (i, cnv) {
-        gif.addFrame(cnv, { copy: true, delay: 100 });
-      }, function () {
-        gif.on("finished", function (blob) {
-          var reader = new FileReader();
-          reader.onload = function () {
-            var b64 = reader.result.split(",")[1];
-            var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_holo.gif";
-            if (bridge) bridge.postMessage({ type: "saveGif", data: b64, name: name });
-            else downloadData(reader.result, name);
-            finishExport("GIF 已导出: " + name);
-          };
-          reader.readAsDataURL(blob);
+      withExportSize(es[0], es[1], function (restore) {
+        var gif = new GIF({ workers: 1, quality: 8, width: es[0], height: es[1], workerScript: workerUrl });
+        captureFrames(count, function (i, cnv) {
+          gif.addFrame(cnv, { copy: true, delay: state.delay });
+        }, function () {
+          gif.on("finished", function (blob) {
+            restore();
+            var reader = new FileReader();
+            reader.onload = function () {
+              var b64 = reader.result.split(",")[1];
+              var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_holo.gif";
+              if (bridge) bridge.postMessage({ type: "saveGif", data: b64, name: name });
+              else downloadData(reader.result, name);
+              finishExport("GIF 已导出: " + name + " (" + es[0] + "×" + es[1] + ")");
+            };
+            reader.readAsDataURL(blob);
+          });
+          gif.render();
         });
-        gif.render();
       });
     });
   };
@@ -433,24 +546,34 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     if (exporting || !srcMeshes.length) return;
     exporting = true; statusEl.textContent = "EXPORTING PNG SEQ ...";
     var count = +$("inpFrames").value;
-    var frames = [];
-    captureFrames(count, function (i, cnv) {
-      frames.push(cnv.toDataURL("image/png").split(",")[1]);
-    }, function () {
-      var name = state.fileName.replace(/\.[^.]+$/, "") || "holo";
-      if (bridge) bridge.postMessage({ type: "savePngSeq", frames: frames, name: name });
-      else frames.forEach(function (d, i) { downloadData("data:image/png;base64," + d, name + "_f" + String(i).padStart(2, "0") + ".png"); });
-      exporting = false; statusEl.textContent = "PNG 序列已导出: " + name + "_f00..f" + (count - 1);
+    var es = exportSize();
+    withExportSize(es[0], es[1], function (restore) {
+      var frames = [];
+      captureFrames(count, function (i, cnv) {
+        frames.push(cnv.toDataURL("image/png").split(",")[1]);
+      }, function () {
+        restore();
+        var name = state.fileName.replace(/\.[^.]+$/, "") || "holo";
+        if (bridge) bridge.postMessage({ type: "savePngSeq", frames: frames, name: name });
+        else frames.forEach(function (d, i) { downloadData("data:image/png;base64," + d, name + "_f" + String(i).padStart(2, "0") + ".png"); });
+        exporting = false; statusEl.textContent = "PNG 序列已导出: " + name + "_f00..f" + (count - 1) + " (" + es[0] + "×" + es[1] + ")";
+      });
     });
   };
 
-  /* ---------- 导出当前帧 ---------- */
+  /* ---------- 导出当前帧 PNG ---------- */
   $("btnShot").onclick = function () {
     if (!srcMeshes.length) return;
-    var d = canvas.toDataURL("image/png");
-    var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_frame.png";
-    if (bridge) bridge.postMessage({ type: "savePng", data: d.split(",")[1], name: name });
-    else downloadData(d, name);
+    var es = exportSize();
+    withExportSize(es[0], es[1], function (restore) {
+      composer.render();
+      var d = canvas.toDataURL("image/png");
+      restore();
+      var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_frame.png";
+      if (bridge) bridge.postMessage({ type: "savePng", data: d.split(",")[1], name: name });
+      else downloadData(d, name);
+      statusEl.textContent = "PNG 已导出: " + name + " (" + es[0] + "×" + es[1] + ")";
+    });
   };
 
   function downloadData(url, name) {
@@ -459,16 +582,6 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   }
 
   /* ---------- 尺寸与主循环 ---------- */
-  function resize() {
-    var w = window.innerWidth, h = window.innerHeight;
-    renderer.setSize(w, h, false);
-    composer.setSize(w, h);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    var ring = Math.min(w, h) * 0.94;
-    ringWrap.style.width = ring + "px";
-    ringWrap.style.height = ring + "px";
-  }
   window.addEventListener("resize", resize);
   resize();
 
