@@ -180,6 +180,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // 1.2.4(b8): OPEN_ABOUT=1 直启弹「关于」（安装/交付验证标准能力，存量补齐）
+        if ProcessInfo.processInfo.environment["OPEN_ABOUT"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.showAboutPanel()
+            }
+        }
+    }
+
+    private func showAboutPanel() {
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "HoloStage",
+            .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
+            .version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
+            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\n渲染引擎 three.js r170 + tinyusdz（本地内置，离线可用）")
+        ])
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
