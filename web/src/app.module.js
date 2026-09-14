@@ -21,6 +21,9 @@
  *        导出新增「整个窗口（含界面）」—— 走原生 WKWebView 快照，DOM 叠加层与控制面板都能进图
  *        （此前只取 WebGL canvas，自由模式下的 DOM 全息环根本没进导出）；GIF 目标体积上限；
  *        数据弧 1/4 弧改为左右镜像；导出网页查看器同步
+ * 1.3.4: 背景从「一张静态贴图」升级为「一层动态场景」—— bgfx.js 相机跟随全屏 GLSL 层
+ *        （数字雨下落 / 扫描带扫过 / 辉光呼吸 / 六边形与圆盘旋转），随配色主色与亮度；
+ *        动效开关 + 速度可调；自定义背景图仍保留
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -40,7 +43,7 @@ import { TinyUSDZLoader } from "./vendor/TinyUSDZLoader.js";
 import { TinyUSDZLoaderUtils } from "./vendor/TinyUSDZLoaderUtils.js";
 import { buildRingSVG, RING_STYLES } from "./rings.js";
 import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
-import { buildBackgroundCanvas } from "./bg.js";
+import { createBackgroundLayer } from "./bgfx.js";
 import initTinyUSDZNative from "./tinyusdz-glue.js";
 
 (function () {
@@ -164,36 +167,54 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   }
   buildGrids();
 
-  /* ---------- 背景（1.3.3）----------
-   * 程序化科技底图（bg.js）跟随配色主色；也可载入自定义图片（cover 铺满）。
-   * 做成 CanvasTexture 赋给 scene.background —— 这样才会随 WebGL 画面一起
-   * 进 GIF/PNG/导出网页，而不是只在屏幕上好看的 CSS 装饰。
-   * 纹理按「长宽比 + 配色 + 亮度 + 图片版本」做指纹缓存，参数没变不重建。 */
-  var bgImage = null;   // 自定义背景图（HTMLImageElement）；null = 程序化
+  /* ---------- 背景（1.3.4）----------
+   * 两层互斥，二选一：
+   *  1) 动态背景层（bgfx.js，默认）—— 相机跟随的全屏 GLSL 层，按 uTime 演算，
+   *     随 WebGL 画面一起进 PNG / GIF / 导出网页；跟随配色主色与背景亮度。
+   *  2) 自定义背景图（可选）—— 用户载入的图片按 cover 铺满，做成 CanvasTexture
+   *     赋给 scene.background（导出网页里内嵌降采样副本）。
+   * 1.3.3 的程序化静态贴图（bg.js）已被动态层取代；bg.js 文件保留但不再引用。
+   * ⚠️ 这里只建对象、不读 state —— state 在下方才声明（var 提升为 undefined）。 */
+  var bgImage = null;   // 自定义背景图（HTMLImageElement）；null = 走动态层
   var bgDataURL = "";   // 降采样后的 data URL（写进导出网页配置）
   var bgStamp = 0;      // 图片版本号（换图即失效缓存）
   var bgKey = "";
+  var bgLayer = createBackgroundLayer({ mainHex: "#3fb9ff", bright: 1, speed: 1, motion: true });
+  scene.add(bgLayer.mesh);
+  function bgDrawSize() {   // 取「绘制缓冲」尺寸：导出期间像素比压到 1，缓冲区 = 导出尺寸
+    var v = new THREE.Vector2();
+    renderer.getDrawingBufferSize(v);
+    return [Math.max(2, Math.round(v.x)), Math.max(2, Math.round(v.y))];
+  }
   function bgSourceCanvas(w, h) {
-    if (bgImage && bgImage.width) {
-      var cv = document.createElement("canvas");
-      cv.width = w; cv.height = h;
-      var cx = cv.getContext("2d");
-      var s = Math.max(w / bgImage.width, h / bgImage.height); // cover：铺满不留边
-      cx.drawImage(bgImage, (w - bgImage.width * s) / 2, (h - bgImage.height * s) / 2,
-        bgImage.width * s, bgImage.height * s);
-      return cv;
-    }
-    return buildBackgroundCanvas(w, h, PRESETS[currentPreset].css, state.bgBright);
+    var cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    var cx = cv.getContext("2d");
+    var s = Math.max(w / bgImage.width, h / bgImage.height); // cover：铺满不留边
+    cx.drawImage(bgImage, (w - bgImage.width * s) / 2, (h - bgImage.height * s) / 2,
+      bgImage.width * s, bgImage.height * s);
+    return cv;
   }
   function applyBackground(w, h) {
-    if (!state.bgOn) {
+    var useImage = !!(state.bgOn && bgImage && bgImage.width);
+    var useFx = !!(state.bgOn && !bgImage);
+    bgLayer.mesh.visible = useFx;
+    if (useFx) {
+      bgLayer.setMain(PRESETS[currentPreset].css);
+      bgLayer.setBright(state.bgBright);
+      bgLayer.setMotion(state.bgMotion);
+      bgLayer.setSpeed(state.bgSpeed);
+      var d = bgDrawSize();
+      bgLayer.setSize(d[0], d[1]);
+    }
+    if (!useImage) {
       if (scene.background && scene.background.isTexture) scene.background.dispose();
       scene.background = null; bgKey = "";
       return;
     }
     var W = Math.round(Math.min(2048, Math.max(320, w || stageW || 640)));
     var H = Math.round(Math.min(2048, Math.max(200, h || stageH || 400)));
-    var key = [W, H, currentPreset, state.bgBright, bgImage ? bgStamp : 0].join("|");
+    var key = [W, H, bgStamp].join("|");
     if (key === bgKey) return;
     bgKey = key;
     var tex = new THREE.CanvasTexture(bgSourceCanvas(W, H));
@@ -206,7 +227,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function setBgImage(dataURL) {
     if (!dataURL) {
       bgImage = null; bgDataURL = ""; bgStamp++;
-      statusEl.textContent = "背景已切回程序化生成";
+      statusEl.textContent = "背景已切回动态层";
       applyBackground();
       return;
     }
@@ -334,7 +355,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     physOn: false, physGravity: 1.0, physStrength: 1.0, // 1.3.0: ammo.js 物理（PMX/PMD）
     vmdUrl: "", vmdName: "",            // 1.3.0: 拖入的 VMD 动作文件
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
-    bgOn: true, bgBright: 1.0,           // 1.3.3: 程序化科技背景（bg.js）开关 / 亮度
+    bgOn: true, bgBright: 1.0,           // 1.3.3: 背景开关 / 亮度
+    bgMotion: true, bgSpeed: 1.0,        // 1.3.4: 动态背景层（bgfx.js）动效开关 / 速度
     exportUI: false, exportScale: 2,     // 1.3.3: 导出内容「整个窗口（含界面）」+ 快照倍率
     sizeLimitMB: 0,                      // 1.3.3: GIF 目标体积上限（0 = 不限）
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
@@ -1329,11 +1351,18 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   $("inpFrames").oninput = function () { $("valFrames").textContent = this.value; };
   $("inpDelay").oninput = function () { state.delay = +this.value; $("valDelay").textContent = this.value; };
 
-  // 背景（1.3.3）
+  // 背景（1.3.3 / 1.3.4）
   $("inpBg").onchange = function () { state.bgOn = this.checked; applyBackground(); };
   $("inpBgBright").oninput = function () {
     state.bgBright = +this.value / 100;
     $("valBgBright").textContent = state.bgBright.toFixed(1);
+    applyBackground();
+  };
+  // 动态背景层（1.3.4）
+  $("inpBgFx").onchange = function () { state.bgMotion = this.checked; applyBackground(); };
+  $("inpBgSpeed").oninput = function () {
+    state.bgSpeed = +this.value / 100;
+    $("valBgSpeed").textContent = state.bgSpeed.toFixed(1);
     applyBackground();
   };
   $("btnBgImg").onclick = function () {
@@ -1752,7 +1781,11 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, z: r.z, s: r.s, p: r.p, r: r.r, w: r.w, zu: r.zu }; }),
       ringMode: state.ringMode,
       ringAnchor: state.ringAnchor,
-      bg: state.bgOn ? { bright: state.bgBright, img: bgDataURL || "" } : null // 1.3.3: 背景（含自定义图）
+      // 1.3.4: 背景 —— img 为空则查看器侧重建动态层（motion/speed/bright 一并带上）
+      bg: state.bgOn ? {
+        bright: state.bgBright, img: bgDataURL || "",
+        motion: state.bgMotion, speed: state.bgSpeed
+      } : null
     };
     // 1.3.0: PMX 场景先把 VMD 动作 + 物理逐帧烘焙成骨骼关键帧，随 GLB 一起走
     var exportClips = animClips.slice();
@@ -1889,6 +1922,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     requestAnimationFrame(loop);
     var dt = Math.min((now - last) / 1000, 0.1); last = now;
     tAcc += dt;
+    bgLayer.tick(dt); // 1.3.4: 动态背景层（导出时同样推进 → GIF/PNG 序列里背景真的在动）
     // 骨骼动画（1.2.4）：导出时也持续采样，帧序列里动画随旋转同步演进
     // 1.3.0：PMX 走 MMDAnimationHelper，内部按 mixer → IK/grant → physics 顺序推进
     if (mmdHelper) { if (!anim.scrubbing) mmdHelper.update(dt); }

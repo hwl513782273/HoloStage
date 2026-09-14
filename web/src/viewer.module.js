@@ -4,6 +4,8 @@
  * 1.2.6: 环模式（经典 1.0）+ 相机控制（滚轮缩放 / 左键拖动视角 / 右键复位）
  * 1.3.2: 环三轴位移 + Z 轴朝上躺平；⌘/⌥ 拖拽 360° 自由视角
  * 1.3.3: WASD 平移 / QE 推拉；程序化科技背景（bg.js，或导出时内嵌的自定义图）
+ * 1.3.4: 背景改为 bgfx.js 动态层（数字雨下落 / 扫描带 / 辉光呼吸 / 六边形与圆盘旋转），
+ *        动效开关与速度随导出配置还原；自定义图仍走内嵌副本
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -12,7 +14,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { buildRingSVG } from "./rings.js";
 import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
-import { buildBackgroundCanvas } from "./bg.js";
+import { createBackgroundLayer } from "./bgfx.js";
 
 (function () {
   "use strict";
@@ -313,31 +315,51 @@ import { buildBackgroundCanvas } from "./bg.js";
   gridGroup.add(g1); gridGroup.add(g2);
   gridGroup.visible = CFG.grid !== false;
 
-  /* 背景（1.3.3）：与 App 端同一个 bg.js 程序化生成；若导出时用的是自定义图则内嵌还原 */
+  /* 背景（1.3.4）：与 App 端同一个 bgfx.js 动态层；若导出时用的是自定义图则内嵌副本还原 */
+  var bgLayer = null;
+  function bgEnsure() {
+    if (bgLayer) return bgLayer;
+    bgLayer = createBackgroundLayer({
+      mainHex: preset.css,
+      bright: (CFG.bg && typeof CFG.bg.bright === "number") ? CFG.bg.bright : 1,
+      speed: (CFG.bg && typeof CFG.bg.speed === "number") ? CFG.bg.speed : 1,
+      motion: !(CFG.bg && CFG.bg.motion === false)
+    });
+    scene.add(bgLayer.mesh);
+    return bgLayer;
+  }
+  function bgDrawSize() {
+    var v = new THREE.Vector2();
+    renderer.getDrawingBufferSize(v);
+    return [Math.max(2, Math.round(v.x)), Math.max(2, Math.round(v.y))];
+  }
   function applyBackground() {
+    var cfg = CFG.bg;
+    var useImage = !!(cfg && cfg.img);
+    var useFx = !!(cfg && !cfg.img);
+    var L = bgEnsure();
+    L.mesh.visible = useFx;
+    L.setMain(preset.css);
+    if (useFx) {
+      var d = bgDrawSize();
+      L.setSize(d[0], d[1]);
+    }
     if (scene.background && scene.background.isTexture) scene.background.dispose();
     scene.background = null;
-    var cfg = CFG.bg;
-    if (!cfg) return;
+    if (!useImage) return;
     var W = window.innerWidth, H = window.innerHeight;
-    if (cfg.img) {
-      var im = new Image();
-      im.onload = function () {
-        var cv = document.createElement("canvas");
-        cv.width = W; cv.height = H;
-        var cx = cv.getContext("2d");
-        var s = Math.max(W / im.width, H / im.height);
-        cx.drawImage(im, (W - im.width * s) / 2, (H - im.height * s) / 2, im.width * s, im.height * s);
-        var t = new THREE.CanvasTexture(cv);
-        t.colorSpace = THREE.SRGBColorSpace;
-        scene.background = t;
-      };
-      im.src = cfg.img;
-      return;
-    }
-    var tex = new THREE.CanvasTexture(buildBackgroundCanvas(W, H, preset.css, cfg.bright));
-    tex.colorSpace = THREE.SRGBColorSpace;
-    scene.background = tex;
+    var im = new Image();
+    im.onload = function () {
+      var cv = document.createElement("canvas");
+      cv.width = W; cv.height = H;
+      var cx = cv.getContext("2d");
+      var s = Math.max(W / im.width, H / im.height);
+      cx.drawImage(im, (W - im.width * s) / 2, (H - im.height * s) / 2, im.width * s, im.height * s);
+      var t = new THREE.CanvasTexture(cv);
+      t.colorSpace = THREE.SRGBColorSpace;
+      scene.background = t;
+    };
+    im.src = cfg.img;
   }
 
   /* 灯光（全彩模式用） */
@@ -416,6 +438,7 @@ import { buildBackgroundCanvas } from "./bg.js";
     requestAnimationFrame(loop);
     var dt = Math.min((now - last) / 1000, 0.1); last = now;
     tAcc += dt;
+    if (bgLayer) bgLayer.tick(dt); // 1.3.4: 动态背景层
     if (mixer) mixer.update(dt);
     updateCamKeys(dt); // 1.3.3: WASD / QE 移动镜头
     spin += (CFG.speed || 0.5) * dt;
