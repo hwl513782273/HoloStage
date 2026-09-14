@@ -191,7 +191,7 @@
     </div>
   </div>
 
-  <div id="status">NO MODEL LOADED — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP，可切换线框 / 全彩</div>
+  <div id="status">NO MODEL LOADED — 滚轮缩放 · 左键拖动视角 · 右键复位 — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP</div>
   <div id="dropHint">释放以载入模型</div>
   <div id="err"></div>
 
@@ -270,6 +270,13 @@
       <div id="uiColorList" style="margin-top:8px;"></div>
       <button id="btnUIColorReset">全部恢复 auto</button>
     </details>
+
+    <h2>环模式</h2>
+    <select id="selRingMode">
+      <option value="free" selected>自由变换（1.2+）</option>
+      <option value="classic">经典 1.0（绕中点平转）</option>
+    </select>
+    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">经典模式：环锚定舞台中心平转、隐藏③号环，忽略各环独立变换</div>
 
     <h2>全息环 ①</h2>
     <details class="ring" open>

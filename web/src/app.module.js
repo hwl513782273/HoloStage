@@ -7,6 +7,7 @@
  *        glTF/GLB/FBX 骨骼动画播放（播放/暂停/进度/速度/循环/多片段切换）
  * 1.2.5: 全息环样式库（分段弧/刻度盘/虚线环/魔法阵/数据弧，每环独立切换）+ 偏航角；
  *        环组/场景组重置按钮；界面配色折叠；导出单文件网页 HTML（完整还原画面）
+ * 1.2.6: 环模式（自由变换 / 经典 1.0 绕中点平转）；相机控制（滚轮缩放 / 左键拖动视角 / 右键复位）
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -75,6 +76,20 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   camera.position.set(0, 1.7, 4.8);
   camera.lookAt(0, 0.85, 0);
 
+  /* 相机轨道控制（1.2.6）：滚轮缩放 / 左键拖动视角 / 右键复位 */
+  var CAM_TARGET = new THREE.Vector3(0, 0.85, 0);
+  var CAM_HOME = { yaw: 0, pitch: Math.asin(0.85 / Math.sqrt(0.85 * 0.85 + 4.8 * 4.8)), dist: Math.sqrt(0.85 * 0.85 + 4.8 * 4.8) };
+  var camYaw = CAM_HOME.yaw, camPitch = CAM_HOME.pitch, camDist = CAM_HOME.dist;
+  function updateCamera() {
+    camera.position.set(
+      CAM_TARGET.x + camDist * Math.cos(camPitch) * Math.sin(camYaw),
+      CAM_TARGET.y + camDist * Math.sin(camPitch),
+      CAM_TARGET.z + camDist * Math.cos(camPitch) * Math.cos(camYaw)
+    );
+    camera.lookAt(CAM_TARGET);
+  }
+  updateCamera();
+
   var composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   var bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 1.1, 0.6, 0.0);
@@ -124,6 +139,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
+    ringMode: "free",                    // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）
     rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5）
       { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0, style: "seg" },
       { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0, style: "dial" },
@@ -364,8 +380,17 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
 
   function applyRings() {
     var base = Math.min(stageW, stageH) * 0.94;
+    var classic = state.ringMode === "classic"; // 1.2.6: 经典 1.0 — 锚定中心平转，忽略独立变换，隐藏③号环
     state.rings.forEach(function (rg, i) {
       var wrap = ringWraps[i];
+      if (classic) {
+        wrap.style.display = (i === 2) ? "none" : "";
+        wrap.style.width = base + "px";
+        wrap.style.height = base + "px";
+        wrap.style.transform = "translate(-50%, -50%)";
+        return;
+      }
+      wrap.style.display = "";
       var size = base * rg.s / 100;
       wrap.style.width = size + "px";
       wrap.style.height = size + "px";
@@ -768,6 +793,13 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       ringWraps[n - 1].innerHTML = buildRingSVG(this.value, n);
     };
   });
+  // 环模式（1.2.6）：自由变换 / 经典 1.0
+  $("selRingMode").value = state.ringMode;
+  $("selRingMode").onchange = function () {
+    state.ringMode = this.value;
+    applyRings();
+    statusEl.textContent = (this.value === "classic") ? "RING MODE: CLASSIC 1.0" : "RING MODE: FREE";
+  };
   // 环组重置（1.2.5）：位置/大小/俯仰/偏航/滚转回默认（保留样式）
   Array.prototype.forEach.call(document.querySelectorAll(".rstRing"), function (btn) {
     btn.onclick = function (e) {
@@ -986,7 +1018,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       pulse: state.pulseOn, bloom: bloomBase, atmo: state.atmo,
       grid: gridGroup.visible, hud: $("inpHud").checked,
       anim: !!(mixer && animClips.length),
-      rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, s: r.s, p: r.p, r: r.r, w: r.w }; })
+      rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, s: r.s, p: r.p, r: r.r, w: r.w }; }),
+      ringMode: state.ringMode
     };
     var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_holo.html";
     new GLTFExporter().parse(exportRoot, function (glb) {
@@ -1031,6 +1064,32 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     mousePar.x = Math.max(-1, Math.min(1, (e.clientX - (r.left + r.width / 2)) / (r.width / 2)));
     mousePar.y = Math.max(-1, Math.min(1, (e.clientY - (r.top + r.height / 2)) / (r.height / 2)));
   });
+  /* 相机交互（1.2.6）：滚轮缩放 / 左键拖动视角 / 右键复位 */
+  stageEl.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    camDist *= (e.deltaY > 0 ? 1.08 : 1 / 1.08);
+    camDist = Math.max(1.2, Math.min(14, camDist));
+    updateCamera();
+  }, { passive: false });
+  var camDrag = null;
+  stageEl.addEventListener("mousedown", function (e) {
+    if (e.button === 0) camDrag = { x: e.clientX, y: e.clientY };
+  });
+  window.addEventListener("mousemove", function (e) {
+    if (!camDrag) return;
+    var dx = e.clientX - camDrag.x, dy = e.clientY - camDrag.y;
+    camDrag = { x: e.clientX, y: e.clientY };
+    camYaw -= dx * 0.005;
+    camPitch = Math.max(-1.2, Math.min(1.45, camPitch + dy * 0.005));
+    updateCamera();
+  });
+  window.addEventListener("mouseup", function () { camDrag = null; });
+  stageEl.addEventListener("contextmenu", function (e) {
+    e.preventDefault();
+    camYaw = CAM_HOME.yaw; camPitch = CAM_HOME.pitch; camDist = CAM_HOME.dist;
+    updateCamera();
+    statusEl.textContent = "CAMERA RESET";
+  });
   (function loop(now) {
     requestAnimationFrame(loop);
     var dt = Math.min((now - last) / 1000, 0.1); last = now;
@@ -1059,5 +1118,5 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     composer.render();
   })(last);
 
-  statusEl.textContent = "READY — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP，可切换线框 / 全彩";
+  statusEl.textContent = "READY — 滚轮缩放 · 左键拖动视角 · 右键复位 — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP";
 })();

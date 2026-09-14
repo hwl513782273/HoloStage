@@ -1,6 +1,7 @@
-/* HoloStage 1.2.5 — 导出网页查看器（被 App 导出时内嵌进单文件 HTML）
+/* HoloStage 1.2.6 — 导出网页查看器（被 App 导出时内嵌进单文件 HTML）
  * 读取 window.HOLO_EXPORT（设置）+ window.HOLO_GLB（模型 base64）还原画面：
- * 配色 / 线框或全彩 / 网格地台 / HUD 三环（含样式）/ 标题 / 进度条 / 扫描线 / 转速 / 呼吸 / 视差 / 脉冲 / 辉光 / 动画
+ * 配色 / 线框或全彩 / 网格地台 / HUD 三环（含样式与环模式）/ 标题 / 进度条 / 扫描线 / 转速 / 呼吸 / 视差 / 脉冲 / 辉光 / 动画
+ * 1.2.6: 环模式（经典 1.0）+ 相机控制（滚轮缩放 / 左键拖动视角 / 右键复位）
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -65,7 +66,7 @@ import { buildRingSVG } from "./rings.js";
     '<div class="corner" id="c-tl"></div><div class="corner" id="c-tr"></div>' +
     '<div class="corner" id="c-bl"></div><div class="corner" id="c-br"></div>' +
     '<div id="scanline"></div></div></div>' +
-    '<div id="hint">HOLOSTAGE EXPORT — 自动旋转</div>');
+    '<div id="hint">HOLOSTAGE EXPORT — 滚轮缩放 · 左键拖动视角 · 右键复位</div>');
   var stageEl = document.getElementById("stage");
   var canvas = document.getElementById("gl");
   var hudEl = document.getElementById("hud");
@@ -89,7 +90,16 @@ import { buildRingSVG } from "./rings.js";
   });
   function applyRings() {
     var base = Math.min(window.innerWidth, window.innerHeight) * 0.94;
+    var classic = CFG.ringMode === "classic"; // 1.2.6: 经典 1.0 — 锚定中心平转，忽略独立变换，隐藏③号环
     rings.forEach(function (rg, i) {
+      if (classic) {
+        wraps[i].style.display = (i === 2) ? "none" : "";
+        wraps[i].style.width = base + "px";
+        wraps[i].style.height = base + "px";
+        wraps[i].style.transform = "translate(-50%, -50%)";
+        return;
+      }
+      wraps[i].style.display = "";
       var size = base * rg.s / 100;
       wraps[i].style.width = size + "px";
       wraps[i].style.height = size + "px";
@@ -107,6 +117,42 @@ import { buildRingSVG } from "./rings.js";
   var camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
   camera.position.set(0, 1.7, 4.8);
   camera.lookAt(0, 0.85, 0);
+  /* 相机轨道控制（1.2.6）：滚轮缩放 / 左键拖动视角 / 右键复位 */
+  var CAM_TARGET = new THREE.Vector3(0, 0.85, 0);
+  var CAM_HOME = { yaw: 0, pitch: Math.asin(0.85 / Math.sqrt(0.85 * 0.85 + 4.8 * 4.8)), dist: Math.sqrt(0.85 * 0.85 + 4.8 * 4.8) };
+  var camYaw = CAM_HOME.yaw, camPitch = CAM_HOME.pitch, camDist = CAM_HOME.dist, camDrag = null;
+  function updateCamera() {
+    camera.position.set(
+      CAM_TARGET.x + camDist * Math.cos(camPitch) * Math.sin(camYaw),
+      CAM_TARGET.y + camDist * Math.sin(camPitch),
+      CAM_TARGET.z + camDist * Math.cos(camPitch) * Math.cos(camYaw)
+    );
+    camera.lookAt(CAM_TARGET);
+  }
+  updateCamera();
+  stageEl.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    camDist *= (e.deltaY > 0 ? 1.08 : 1 / 1.08);
+    camDist = Math.max(1.2, Math.min(14, camDist));
+    updateCamera();
+  }, { passive: false });
+  stageEl.addEventListener("mousedown", function (e) {
+    if (e.button === 0) camDrag = { x: e.clientX, y: e.clientY };
+  });
+  window.addEventListener("mousemove", function (e) {
+    if (!camDrag) return;
+    var dx = e.clientX - camDrag.x, dy = e.clientY - camDrag.y;
+    camDrag = { x: e.clientX, y: e.clientY };
+    camYaw -= dx * 0.005;
+    camPitch = Math.max(-1.2, Math.min(1.45, camPitch + dy * 0.005));
+    updateCamera();
+  });
+  window.addEventListener("mouseup", function () { camDrag = null; });
+  stageEl.addEventListener("contextmenu", function (e) {
+    e.preventDefault();
+    camYaw = CAM_HOME.yaw; camPitch = CAM_HOME.pitch; camDist = CAM_HOME.dist;
+    updateCamera();
+  });
   var composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   var bloomBase = (typeof CFG.bloom === "number") ? CFG.bloom : 0.9;
