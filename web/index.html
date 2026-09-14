@@ -8,12 +8,13 @@
     --holo: #3fb9ff;
     --holo-dim: rgba(63, 185, 255, 0.45);
     --holo-faint: rgba(63, 185, 255, 0.18);
-    --panel-bg: rgba(4, 12, 22, 0.82);
-    /* 1.2.2: 控制面板等 App 界面固定青蓝，不随「配色」下拉变化 */
+    --panel-bg: rgba(6, 14, 26, 0.88);
+    /* 1.2.2: 控制面板等 App 界面固定青蓝，不随「配色」下拉变化；1.2.4: 提升可读性 */
     --ui: #3fb9ff;
-    --ui-dim: rgba(63, 185, 255, 0.45);
+    --ui-dim: rgba(125, 200, 255, 0.82);
     --ui-faint: rgba(63, 185, 255, 0.18);
-    --ui-line: rgba(63, 185, 255, 0.35);
+    --ui-line: rgba(63, 185, 255, 0.4);
+    --ui-val: #eaf7ff;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
@@ -93,9 +94,21 @@
   #panel.hidden { transform: translateX(100%); }
   #panel h2 { font-size: 12px; letter-spacing: 0.3em; margin: 14px 0 8px; color: var(--ui-dim); border-bottom: 1px solid var(--ui-line); padding-bottom: 4px; }
   #panel h2:first-child { margin-top: 0; }
-  .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; font-size: 12px; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin: 9px 0; font-size: 12px; }
   .row label { color: var(--ui-dim); }
-  input[type=range] { width: 110px; accent-color: var(--ui); }
+  .row > span { color: var(--ui-val); font-weight: 500; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 110px; height: 16px; background: transparent; accent-color: var(--ui);
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 5px; border-radius: 3px;
+    background: rgba(63,185,255,0.3); border: 1px solid rgba(63,185,255,0.3);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--ui-val); border: 1.5px solid var(--ui); margin-top: -5px;
+  }
   input[type=text], input[type=number], select {
     width: 100%; background: rgba(63,185,255,0.08); border: 1px solid var(--ui-line);
     color: var(--ui); padding: 5px 8px; font-family: inherit; font-size: 12px; letter-spacing: 0.1em;
@@ -121,6 +134,22 @@
   #panel.hidden ~ #panelToggle { display: block; }
 
   #fileInput { display: none; }
+
+  /* ---------- 舞台快捷切换条（1.2.4，App 界面固定青蓝） ---------- */
+  #quickBar {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+    display: flex; gap: 6px; align-items: center; padding: 5px 10px;
+    background: rgba(6, 14, 26, 0.9); border: 1px solid var(--ui-line); border-radius: 16px;
+    z-index: 22; transition: opacity 0.35s ease;
+  }
+  #quickBar.off { opacity: 0; pointer-events: none; }
+  .qChip {
+    font-size: 11px; padding: 3px 8px; border: 1px solid var(--ui-line); border-radius: 10px;
+    color: var(--ui); cursor: pointer; background: rgba(63,185,255,0.06);
+    letter-spacing: 0.05em; user-select: none; white-space: nowrap;
+  }
+  .qChip.on { background: rgba(63,185,255,0.35); color: var(--ui-val); border-color: var(--ui); }
+  .qSep { width: 1px; height: 14px; background: var(--ui-line); }
   #err { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); background: rgba(60,0,10,0.85); border: 1px solid #ff4d5e; color: #ff8d98; padding: 10px 18px; font-size: 12px; z-index: 50; display: none; max-width: 70%; }
 
   /* ---------- 界面配色（1.2.3） ---------- */
@@ -150,6 +179,11 @@
       <div class="corner" id="c-tl"></div><div class="corner" id="c-tr"></div>
       <div class="corner" id="c-bl"></div><div class="corner" id="c-br"></div>
       <div id="scanline"></div>
+    </div>
+    <div id="quickBar" class="off">
+      <span id="qRatios" style="display:flex;gap:6px;"></span>
+      <span class="qSep"></span>
+      <span id="qRes" style="display:flex;gap:6px;"></span>
     </div>
   </div>
 
@@ -200,6 +234,21 @@
     <div class="row"><label>Z 轴朝上</label><input type="checkbox" id="inpZup"></div>
     <button id="btnReset">重置变换</button>
 
+    <h2>动画</h2>
+    <div id="animHint" style="font-size:11px;color:var(--ui-dim);margin:4px 0;">当前模型无动画数据</div>
+    <div id="animUI" style="display:none">
+      <div class="row"><label>动作片段</label><span id="valClip">1/1</span></div>
+      <select id="selClip"></select>
+      <button id="btnPlay">暂停</button>
+      <div class="row"><label>进度</label><span id="valAProg">0%</span></div>
+      <input type="range" id="inpAProg" min="0" max="1000" value="0" style="width:100%">
+      <div class="row"><label>速度</label><span id="valASpeed">1.0</span></div>
+      <input type="range" id="inpASpeed" min="10" max="300" value="100" style="width:100%">
+      <div class="row"><label>循环模式</label><span id="valLoop">循环</span></div>
+      <button id="btnLoop">切换 循环/单次/往返</button>
+      <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">动画在「全彩（原材质）」模式下可见；线框为静态快照</div>
+    </div>
+
     <h2>界面配色（#RRGGBB，auto=跟随配色）</h2>
     <div id="uiColorList"></div>
     <button id="btnUIColorReset">全部恢复 auto</button>
@@ -207,6 +256,11 @@
     <h2>场景</h2>
     <div class="row"><label>转速</label><span id="valSpeed">0.5</span></div>
     <input type="range" id="inpSpeed" min="0" max="20" value="5" style="width:100%">
+    <div class="row"><label>悬浮呼吸</label><input type="checkbox" id="inpBob" checked></div>
+    <div class="row"><label>呼吸幅度</label><span id="valBobAmp">1.0</span></div>
+    <input type="range" id="inpBobAmp" min="10" max="300" value="100" style="width:100%">
+    <div class="row"><label>鼠标视差</label><input type="checkbox" id="inpParallax"></div>
+    <div class="row"><label>辉光脉冲</label><input type="checkbox" id="inpPulse"></div>
     <div class="row"><label>网格地台</label><input type="checkbox" id="inpGrid" checked></div>
     <div class="row"><label>HUD 叠加层</label><input type="checkbox" id="inpHud" checked></div>
 

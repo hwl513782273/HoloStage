@@ -3,6 +3,8 @@
  * 1.2: 模型 XYZ 位移 / 画面比例 / 导出分辨率 / 帧率 / 配色下拉 / 三环独立变换
  * 1.2.2: 配色只作用于画面内（面板固定青蓝）；新增全彩（原材质）渲染 + 全彩氛围开关
  * 1.2.3: 缩放上限 10×；重置变换按钮；界面部件逐个 #RRGGBB 配色（auto=跟随配色下拉）
+ * 1.2.4: 面板可读性提升；舞台底部比例/分辨率快捷切换条；悬浮呼吸/鼠标视差/辉光脉冲；
+ *        glTF/GLB/FBX 骨骼动画播放（播放/暂停/进度/速度/循环/多片段切换）
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -107,10 +109,14 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   scene.add(hemiLight); scene.add(dirLight); scene.add(ambLight); scene.add(backLight);
 
   var srcMeshes = [];
+  var modelBaseY = 0; // 1.2.4: 悬浮呼吸的基准高度（normalizeModel 后记录）
   var state = {
     speed: 0.5, mode: "wire", angle: 32, scale: 1.0, zup: false,
     render: "wire",                     // 1.2.2: wire | full
     atmo: true,                         // 1.2.2: 全彩氛围（辉光+雾）
+    bobOn: true, bobAmp: 1.0,           // 1.2.4: 悬浮呼吸
+    parallaxOn: false,                  // 1.2.4: 鼠标视差
+    pulseOn: false,                     // 1.2.4: 辉光脉冲
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
@@ -215,6 +221,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     modelRoot.position.x += state.pos.x;
     modelRoot.position.y += state.pos.y;
     modelRoot.position.z += state.pos.z;
+    modelBaseY = modelRoot.position.y; // 1.2.4
   }
 
   /* ---------- USDZ（tinyusdz WASM） ---------- */
@@ -284,7 +291,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     else if (/^(https?|file):\/\//i.test(url)) enc = encodeURI(url).replace(/#/g, "%23").replace(/\?/g, "%3F");
     else if (url.charAt(0) === "/") enc = url; // http 调试环境的相对/绝对 URL
     else enc = encodeURI("file://" + url).replace(/#/g, "%23").replace(/\?/g, "%3F");
-    function done(object3DorGeom) {
+    function done(object3DorGeom, anims) {
       srcMeshes = [];
       if (object3DorGeom.isBufferGeometry) {
         srcMeshes.push({ geometry: object3DorGeom, matrix: new THREE.Matrix4() });
@@ -300,11 +307,13 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       setFullObject(object3DorGeom.isBufferGeometry ? object3DorGeom : object3DorGeom);
       var res = buildWireframe();
       normalizeModel();
+      setupAnimations(object3DorGeom.isBufferGeometry ? null : object3DorGeom, anims || []);
       var base = name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").toUpperCase();
       state.fileName = name;
       $("inpTitle").value = base;
       titleEl.textContent = base;
-      statusEl.textContent = name.toUpperCase() + " — " + res.tris.toLocaleString() + " TRIS — " + res.segs.toLocaleString() + " WIREFRAME SEGS";
+      var animNote = (anims && anims.length) ? " — " + anims.length + " 动画片段（全彩模式可见）" : "";
+      statusEl.textContent = name.toUpperCase() + " — " + res.tris.toLocaleString() + " TRIS — " + res.segs.toLocaleString() + " WIREFRAME SEGS" + animNote;
     }
     function fail(err) { showError("载入失败: " + (err && err.message ? err.message : err)); }
     try {
@@ -316,9 +325,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
           if (mats) l.setMaterials(mats);
           l.load(enc, function (o) { done(o); }, undefined, fail);
         }); break;
-        case "gltf": new GLTFLoader().load(enc, function (g) { done(g.scene || g.scenes[0]); }, undefined, fail); break;
-        case "fbx":  new FBXLoader().load(enc, function (o) { done(o); }, undefined, fail); break;
-        case "mmd":  new MMDLoader().load(enc, function (o) { done(o); }, undefined, fail); break;
+        case "gltf": new GLTFLoader().load(enc, function (g) { done(g.scene || g.scenes[0], g.animations); }, undefined, fail); break;
+        case "fbx":  new FBXLoader().load(enc, function (o) { done(o, o.animations); }, undefined, fail); break;
+        case "mmd":  new MMDLoader().load(enc, function (o) { done(o, o.animations); }, undefined, fail); break;
         case "usdz": loadUSDZ(enc, name, fail, done); break;
       }
     } catch (e) { fail(e); }
@@ -452,9 +461,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     var cp = partColor("panel");
     var rootStyle = document.documentElement.style;
     rootStyle.setProperty("--ui", cp);
-    rootStyle.setProperty("--ui-dim", hexToRgba(cp, 0.45));
+    rootStyle.setProperty("--ui-dim", hexToRgba(cp, 0.8));   // 1.2.4: 0.45 → 0.8 提可读性
     rootStyle.setProperty("--ui-faint", hexToRgba(cp, 0.18));
-    rootStyle.setProperty("--ui-line", hexToRgba(cp, 0.35));
+    rootStyle.setProperty("--ui-line", hexToRgba(cp, 0.4));
     // auto 部件的色块预览跟随当前生效色
     UI_PARTS.forEach(function (part) {
       var els = uiRowEls[part.id];
@@ -544,6 +553,118 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     refreshAtmo();
   }
 
+  /* ---------- 骨骼动画播放（1.2.4：GLB/glTF/FBX 自带动画） ---------- */
+  var mixer = null, animClips = [], animAction = null, animClipIdx = 0;
+  var anim = { paused: false, speed: 1, loop: "repeat", scrubbing: false };
+  var LOOP_MODES = [
+    ["repeat", "循环", THREE.LoopRepeat],
+    ["once", "单次", THREE.LoopOnce],
+    ["pingpong", "往返", THREE.LoopPingPong]
+  ];
+  function setupAnimations(object3D, clips) {
+    mixer = null; animClips = []; animAction = null; animClipIdx = 0;
+    var ui = $("animUI"), hint = $("animHint");
+    if (!object3D || !clips || !clips.length) { ui.style.display = "none"; hint.style.display = ""; return; }
+    mixer = new THREE.AnimationMixer(object3D);
+    animClips = clips;
+    var sel = $("selClip");
+    sel.innerHTML = "";
+    clips.forEach(function (c, i) {
+      var op = document.createElement("option");
+      op.value = i;
+      op.textContent = (c.name || "clip " + (i + 1)).substring(0, 28);
+      sel.appendChild(op);
+    });
+    sel.onchange = function () { playAnimClip(+this.value); };
+    anim.paused = false; anim.speed = 1; anim.loop = "repeat";
+    $("inpASpeed").value = 100; $("valASpeed").textContent = "1.0";
+    $("inpAProg").value = 0; $("valAProg").textContent = "0%";
+    $("valLoop").textContent = "循环";
+    $("btnPlay").textContent = "暂停";
+    ui.style.display = ""; hint.style.display = "none";
+    playAnimClip(0);
+  }
+  function playAnimClip(idx) {
+    if (!mixer || !animClips[idx]) return;
+    mixer.stopAllAction();
+    animClipIdx = idx;
+    var clip = animClips[idx];
+    var modeDef = LOOP_MODES.filter(function (m) { return m[0] === anim.loop; })[0] || LOOP_MODES[0];
+    var a = mixer.clipAction(clip);
+    a.setLoop(modeDef[2], modeDef[0] === "once" ? 1 : Infinity);
+    a.clampWhenFinished = true;
+    a.enabled = true;
+    a.paused = anim.paused;
+    a.play();
+    animAction = a;
+    $("valClip").textContent = (idx + 1) + "/" + animClips.length;
+  }
+  $("btnPlay").onclick = function () {
+    anim.paused = !anim.paused;
+    this.textContent = anim.paused ? "播放" : "暂停";
+    if (animAction) animAction.paused = anim.paused;
+  };
+  $("inpASpeed").oninput = function () {
+    anim.speed = +this.value / 100;
+    $("valASpeed").textContent = anim.speed.toFixed(1);
+    if (mixer) mixer.timeScale = anim.speed;
+  };
+  $("btnLoop").onclick = function () {
+    var i = 0;
+    LOOP_MODES.forEach(function (m, k) { if (m[0] === anim.loop) i = k; });
+    var next = LOOP_MODES[(i + 1) % LOOP_MODES.length];
+    anim.loop = next[0];
+    $("valLoop").textContent = next[1];
+    playAnimClip(animClipIdx);
+  };
+  $("inpAProg").oninput = function () {
+    anim.scrubbing = true;
+    if (!mixer || !animAction) return;
+    var clip = animClips[animClipIdx];
+    animAction.time = (+this.value / 1000) * clip.duration;
+    if (anim.paused) mixer.update(0); // 暂停时手动采样一帧应用姿态
+  };
+  $("inpAProg").onchange = function () { anim.scrubbing = false; };
+
+  /* ---------- 舞台快捷切换条（1.2.4） ---------- */
+  var QUICK_RATIOS = ["16:9", "3:2", "4:3", "1:1", "9:16"];
+  var QUICK_RESS = [["720", "720p"], ["1080", "1080p"], ["1440", "2K"], ["2160", "4K"]];
+  (function buildQuickBar() {
+    var qr = $("qRatios"), qn = $("qRes");
+    function mkChip(parent, v, label) {
+      var s = document.createElement("span");
+      s.className = "qChip"; s.dataset.v = v; s.textContent = label;
+      s.onclick = function () {
+        if (parent === qr) { $("selRatio").value = v; $("ratioCustom").style.display = "none"; $("selRatio").dispatchEvent(new Event("change")); }
+        else { $("selRes").value = v; $("resCustom").style.display = "none"; $("selRes").dispatchEvent(new Event("change")); }
+        syncQuickBar();
+      };
+      parent.appendChild(s);
+    }
+    QUICK_RATIOS.forEach(function (r) { mkChip(qr, r, r); });
+    QUICK_RESS.forEach(function (r) { mkChip(qn, r[0], r[1]); });
+  })();
+  function syncQuickBar() {
+    var rv = $("selRatio").value, nv = $("selRes").value;
+    Array.prototype.forEach.call(document.querySelectorAll("#qRatios .qChip"), function (c) {
+      c.classList.toggle("on", c.dataset.v === rv);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("#qRes .qChip"), function (c) {
+      c.classList.toggle("on", c.dataset.v === nv);
+    });
+  }
+  var quickBar = $("quickBar"), qTimer = null;
+  function pokeQuickBar(ms) {
+    quickBar.classList.remove("off");
+    if (qTimer) clearTimeout(qTimer);
+    qTimer = setTimeout(function () { quickBar.classList.add("off"); }, ms || 2000);
+  }
+  stageEl.addEventListener("mousemove", function () { pokeQuickBar(2000); });
+  stageEl.addEventListener("mouseleave", function () { pokeQuickBar(700); });
+  quickBar.addEventListener("mouseenter", function () { if (qTimer) clearTimeout(qTimer); quickBar.classList.remove("off"); });
+  quickBar.addEventListener("mouseleave", function () { pokeQuickBar(900); });
+  syncQuickBar();
+
   /* ---------- 舞台尺寸（按比例 + 避让面板，1.2） ---------- */
   var stageW = 960, stageH = 640;
   var PANEL_W = 249; // 与 #panel 宽 248px + 1px 边线一致
@@ -628,6 +749,23 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     state.speed = +this.value / 10; $("valSpeed").textContent = (+this.value / 10).toFixed(1);
   };
   $("inpGrid").onchange = function () { gridGroup.visible = this.checked; };
+  // 程序化动作（1.2.4）
+  $("inpBob").onchange = function () {
+    state.bobOn = this.checked;
+    if (!state.bobOn) modelRoot.position.y = modelBaseY;
+  };
+  $("inpBobAmp").oninput = function () {
+    state.bobAmp = +this.value / 100;
+    $("valBobAmp").textContent = state.bobAmp.toFixed(1);
+  };
+  $("inpParallax").onchange = function () {
+    state.parallaxOn = this.checked;
+    if (!state.parallaxOn) modelRoot.rotation.z = 0;
+  };
+  $("inpPulse").onchange = function () {
+    state.pulseOn = this.checked;
+    if (!state.pulseOn) refreshAtmo();
+  };
   $("inpHud").onchange = function () {
     $("hud").style.display = this.checked ? "" : "none";
   };
@@ -659,12 +797,14 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   $("selRatio").onchange = function () {
     $("ratioCustom").style.display = this.value === "custom" ? "flex" : "none";
     resize();
+    syncQuickBar();
   };
   ["ratioW", "ratioH"].forEach(function (id) {
     $(id).oninput = function () { if ($("selRatio").value === "custom") resize(); };
   });
   $("selRes").onchange = function () {
     $("resCustom").style.display = this.value === "custom" ? "flex" : "none";
+    syncQuickBar();
   };
   // 导出参数（1.2）
   $("inpFrames").oninput = function () { $("valFrames").textContent = this.value; };
@@ -819,10 +959,38 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   resize();
 
   var last = performance.now();
+  var spinAngle = 0, tAcc = 0;
+  var mousePar = { x: 0, y: 0 };
+  window.addEventListener("mousemove", function (e) {
+    var r = stageEl.getBoundingClientRect();
+    mousePar.x = Math.max(-1, Math.min(1, (e.clientX - (r.left + r.width / 2)) / (r.width / 2)));
+    mousePar.y = Math.max(-1, Math.min(1, (e.clientY - (r.top + r.height / 2)) / (r.height / 2)));
+  });
   (function loop(now) {
     requestAnimationFrame(loop);
     var dt = Math.min((now - last) / 1000, 0.1); last = now;
-    if (!exporting) modelRoot.rotation.y += state.speed * dt;
+    tAcc += dt;
+    // 骨骼动画（1.2.4）：导出时也持续采样，帧序列里动画随旋转同步演进
+    if (mixer && !anim.scrubbing) mixer.update(dt);
+    if (mixer && animAction && !anim.scrubbing) {
+      var clip = animClips[animClipIdx];
+      var p = clip.duration ? Math.min(1, animAction.time / clip.duration) : 0;
+      $("inpAProg").value = Math.round(p * 1000);
+      $("valAProg").textContent = Math.round(p * 100) + "%";
+    }
+    if (!exporting) {
+      spinAngle += state.speed * dt;
+      var yaw = spinAngle, roll = 0;
+      if (state.parallaxOn) { yaw += mousePar.x * 0.22; roll = mousePar.y * 0.1; }
+      modelRoot.rotation.y = yaw;
+      modelRoot.rotation.z = roll;
+      modelRoot.position.y = modelBaseY +
+        (state.bobOn ? Math.sin(tAcc * 1.7) * 0.055 * state.bobAmp : 0);
+    }
+    if (state.pulseOn) {
+      var atmo = (state.render === "full") ? state.atmo : true;
+      bloom.strength = atmo ? bloomBase * (1 + 0.22 * Math.sin(tAcc * 2.3)) : 0;
+    }
     composer.render();
   })(last);
 
