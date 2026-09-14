@@ -1,6 +1,7 @@
 /* HoloStage 1.2 — 3D 模型 → 线框全息加载动画（ES module 版，esbuild 打包）
  * 1.1: USDZ（tinyusdz usdc/usda）+ GLB + ZIP（原生解压后进入）
  * 1.2: 模型 XYZ 位移 / 画面比例 / 导出分辨率 / 帧率 / 配色下拉 / 三环独立变换
+ * 1.2.2: 配色只作用于画面内（面板固定青蓝）；新增全彩（原材质）渲染 + 全彩氛围开关
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -9,6 +10,7 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
@@ -73,12 +75,25 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   /* ---------- 模型容器 ---------- */
   var modelRoot = new THREE.Group();
   var wireGroup = new THREE.Group();
+  var fullGroup = new THREE.Group();   // 1.2.2: 全彩（原材质）渲染容器
   modelRoot.add(wireGroup);
+  modelRoot.add(fullGroup);
   scene.add(modelRoot);
+
+  // 灯光（只影响全彩模式的 PBR/Phong 材质；线框 LineBasicMaterial 与 GridHelper 不受影响）
+  var hemiLight = new THREE.HemisphereLight(0xffffff, 0x334455, 1.1);
+  var dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+  dirLight.position.set(2.5, 4, 3);
+  var ambLight = new THREE.AmbientLight(0xffffff, 0.55);
+  var backLight = new THREE.DirectionalLight(0xdde8ff, 0.8); // 背光：避免金属 PBR 材质背光面全黑
+  backLight.position.set(-2, 1.5, -3);
+  scene.add(hemiLight); scene.add(dirLight); scene.add(ambLight); scene.add(backLight);
 
   var srcMeshes = [];
   var state = {
     speed: 0.5, mode: "wire", angle: 32, scale: 1.0, zup: false,
+    render: "wire",                     // 1.2.2: wire | full
+    atmo: true,                         // 1.2.2: 全彩氛围（辉光+雾）
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
@@ -88,6 +103,34 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       { x: 0, y: 0, s: 86,  p: 18, r: -12 }
     ]
   };
+
+  /* ---------- 全彩：保留原始对象树 / 释放 ---------- */
+  function disposeObject(root) {
+    root.traverse(function (o) {
+      if (o.geometry) o.geometry.dispose();
+      var mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+      mats.forEach(function (m) {
+        for (var k in m) {
+          var v = m[k];
+          if (v && v.isTexture) v.dispose();
+        }
+        m.dispose();
+      });
+    });
+  }
+  function setFullObject(obj) {
+    while (fullGroup.children.length) {
+      var c = fullGroup.children[0];
+      fullGroup.remove(c);
+      disposeObject(c);
+    }
+    if (obj.isBufferGeometry) {
+      var mesh = new THREE.Mesh(obj, new THREE.MeshStandardMaterial({ color: 0xbfc8d0, metalness: 0.1, roughness: 0.75 }));
+      fullGroup.add(mesh);
+    } else {
+      fullGroup.add(obj);
+    }
+  }
 
   /* ---------- 线框构建 ---------- */
   function buildWireframe() {
@@ -183,11 +226,25 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
         loader.parse(new Uint8Array(buf), url, function (usd) {
           var root = usd.getDefaultRootNode();
           var mtl = TinyUSDZLoaderUtils.createDefaultMaterial();
-          var obj = TinyUSDZLoaderUtils.buildThreeNode(root, mtl, usd, { overrideMaterial: true });
+          // 1.2.2: overrideMaterial=false → 保留 USD 原材质（全彩模式用），缺材质处回落 defaultMtl
+          var obj = TinyUSDZLoaderUtils.buildThreeNode(root, mtl, usd, { overrideMaterial: false });
           done(obj);
         }, fail);
       });
     }).catch(fail);
+  }
+
+  /* ---------- OBJ + MTL（1.2.2: 全彩模式需要原材质/贴图） ---------- */
+  function tryOBJMaterials(url, cb) {
+    fetch(url).then(function (r) { return r.ok ? r.text() : null; }).then(function (text) {
+      if (!text) { cb(null); return; }
+      var m = text.match(/^\s*mtllib\s+(.+)$/m);
+      if (!m) { cb(null); return; }
+      var mtlName = m[1].trim().replace(/^"+|"+$/g, "");
+      var dir = url.substring(0, url.lastIndexOf("/") + 1);
+      var mtlUrl = dir + encodeURI(mtlName).replace(/#/g, "%23").replace(/\?/g, "%3F");
+      new MTLLoader().load(mtlUrl, function (mats) { mats.preload(); cb(mats); }, undefined, function () { cb(null); });
+    }).catch(function () { cb(null); });
   }
 
   /* ---------- 加载器分发 ---------- */
@@ -223,6 +280,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
         });
       }
       if (!srcMeshes.length) { showError("文件中未找到网格数据"); return; }
+      setFullObject(object3DorGeom.isBufferGeometry ? object3DorGeom : object3DorGeom);
       var res = buildWireframe();
       normalizeModel();
       var base = name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").toUpperCase();
@@ -236,7 +294,11 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       switch (kind) {
         case "stl":  new STLLoader().load(enc, function (g) { done(g); }, undefined, fail); break;
         case "ply":  new PLYLoader().load(enc, function (g) { done(g); }, undefined, fail); break;
-        case "obj":  new OBJLoader().load(enc, function (o) { done(o); }, undefined, fail); break;
+        case "obj": tryOBJMaterials(enc, function (mats) {
+          var l = new OBJLoader();
+          if (mats) l.setMaterials(mats);
+          l.load(enc, function (o) { done(o); }, undefined, fail);
+        }); break;
         case "gltf": new GLTFLoader().load(enc, function (g) { done(g.scene || g.scenes[0]); }, undefined, fail); break;
         case "fbx":  new FBXLoader().load(enc, function (o) { done(o); }, undefined, fail); break;
         case "mmd":  new MMDLoader().load(enc, function (o) { done(o); }, undefined, fail); break;
@@ -329,6 +391,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function applyPreset(name) {
     currentPreset = name;
     var p = PRESETS[name];
+    // 1.2.2: --holo 系只作用于舞台内 HUD（环/标题/进度条/四角）；面板用固定 --ui 不受影响
     document.documentElement.style.setProperty("--holo", p.css);
     document.documentElement.style.setProperty("--holo-dim", p.css + "73");
     document.documentElement.style.setProperty("--holo-faint", p.css + "2e");
@@ -336,6 +399,21 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     wireGroup.children.forEach(function (line) {
       line.material.color.setHex(p.main);
     });
+  }
+
+  /* ---------- 渲染方式 / 全彩氛围（1.2.2） ---------- */
+  var bloomBase = 0.9; // 辉光滑杆值（氛围关时暂存）
+  function refreshAtmo() {
+    var atmo = (state.render === "full") ? state.atmo : true;
+    bloom.strength = atmo ? bloomBase : 0;
+    scene.fog.density = atmo ? 0.055 : 0;
+  }
+  function applyRender() {
+    wireGroup.visible = (state.render === "wire");
+    fullGroup.visible = (state.render === "full");
+    $("wireOnly").style.display = (state.render === "wire") ? "" : "none";
+    $("fullOnly").style.display = (state.render === "full") ? "" : "none";
+    refreshAtmo();
   }
 
   /* ---------- 舞台尺寸（按比例 + 避让面板，1.2） ---------- */
@@ -393,7 +471,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     if (state.mode === "edges") buildWireframe();
   };
   $("inpBloom").oninput = function () {
-    bloom.strength = +this.value / 10; $("valBloom").textContent = (+this.value / 10).toFixed(1);
+    bloomBase = +this.value / 10; $("valBloom").textContent = bloomBase.toFixed(1);
+    refreshAtmo();
   };
   $("inpScale").oninput = function () {
     state.scale = +this.value / 100; $("valScale").textContent = (+this.value / 100).toFixed(1);
@@ -421,6 +500,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   });
   // 配色下拉（1.2）
   $("selPreset").onchange = function () { applyPreset(this.value); };
+  // 渲染方式 / 全彩氛围（1.2.2）
+  $("selRender").onchange = function () { state.render = this.value; applyRender(); };
+  $("inpAtmo").onchange = function () { state.atmo = this.checked; refreshAtmo(); };
   // 三环控制（1.2）
   Array.prototype.forEach.call(document.querySelectorAll(".ringCtl"), function (el) {
     el.oninput = function () {
@@ -602,5 +684,5 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     composer.render();
   })(last);
 
-  statusEl.textContent = "READY — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP";
+  statusEl.textContent = "READY — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP，可切换线框 / 全彩";
 })();
