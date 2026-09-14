@@ -2,7 +2,7 @@
 # HoloStage web 层打包 — esbuild 把 three + addons + tinyusdz loader 打成 IIFE
 set -e
 cd "$(dirname "$0")"
-NODE=/Users/banqiu/.workbuddy/binaries/node/versions/22.22.2/bin/node
+NODE=/Users/banqiu/.workbuddy/binaries/node/versions/22.22.2-3/bin/node
 ESBUILD=/Users/banqiu/.workbuddy/binaries/node/workspace/node_modules/.bin/esbuild
 SRC=web/src
 LIB=web/lib

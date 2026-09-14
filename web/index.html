@@ -260,6 +260,15 @@
       <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">动画在「全彩（原材质）」模式下可见；线框为静态快照</div>
     </div>
 
+    <div id="mmdUI" style="display:none">
+      <div class="row"><label>物理模拟</label><input type="checkbox" id="inpPhys"></div>
+      <div class="row"><label>物理重力</label><span id="valPhysG">1.0</span></div>
+      <input type="range" id="inpPhysG" min="0" max="300" value="100" style="width:100%">
+      <div class="row"><label>物理强度</label><span id="valPhysS">1.0</span></div>
+      <input type="range" id="inpPhysS" min="50" max="200" value="100" style="width:100%">
+      <div id="mmdHint" style="font-size:10px;color:var(--ui-dim);margin-top:4px;">拖入 .vmd 文件可套用动作（MikuMikuDance 动作数据）</div>
+    </div>
+
     <h2>场景</h2>
     <div class="row"><label>转速</label><span id="valSpeed">0.5</span></div>
     <input type="range" id="inpSpeed" min="0" max="20" value="5" style="width:100%">
@@ -394,6 +403,7 @@
   <input type="file" id="fileInput" accept=".stl,.obj,.gltf,.glb,.ply,.fbx,.pmx,.pmd,.usdz,.zip">
   <script src="lib/gif.js"></script>
   <script src="lib/tinyusdz-glue.js"></script>
+  <script src="lib/ammo.wasm.js"></script>
   <script src="lib/bundle.js"></script>
 </body>
 </html>

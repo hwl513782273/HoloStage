@@ -10,6 +10,8 @@
  * 1.2.6: 环模式（自由变换 / 经典 1.0 绕中点平转）；相机控制（滚轮缩放 / 左键拖动视角 / 右键复位）
  * 1.2.7: 经典模式升级为真 3D 场景环（rings3d.js Canvas 纹理）：环心固定世界中心、随相机透视环绕，
  *        GIF/PNG 帧导出也包含环；导出网页查看器同步
+ * 1.3.0: PMX/PMD 真正动起来 —— VMD 动作（拖入 .vmd 自动挂载）+ ammo.js 物理（头发/裙摆/胸）
+ *        MMDAnimationHelper 接管 IK/grant/物理，物理开关 + 重力/强度可调
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -24,6 +26,7 @@ import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { MMDLoader } from "three/examples/jsm/loaders/MMDLoader.js";
+import { MMDAnimationHelper } from "three/examples/jsm/animation/MMDAnimationHelper.js";
 import { TinyUSDZLoader } from "./vendor/TinyUSDZLoader.js";
 import { TinyUSDZLoaderUtils } from "./vendor/TinyUSDZLoaderUtils.js";
 import { buildRingSVG, RING_STYLES } from "./rings.js";
@@ -201,6 +204,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     swayOn: false, swayAmp: 1.0,        // 1.2.10: 待机摆动（轻微摇摆/倾斜）
     hideCenterDot: false,               // 1.2.10: 隐藏刻度盘/魔法阵中央圆点
     customColor: null,                  // 1.2.10: 自定义配色 #rrggbb（存入 PRESETS.custom）
+    physOn: false, physGravity: 1.0, physStrength: 1.0, // 1.3.0: ammo.js 物理（PMX/PMD）
+    vmdUrl: "", vmdName: "",            // 1.3.0: 拖入的 VMD 动作文件
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
@@ -457,7 +462,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       setFullObject(object3DorGeom.isBufferGeometry ? object3DorGeom : object3DorGeom);
       var res = buildWireframe();
       normalizeModel();
-      setupAnimations(object3DorGeom.isBufferGeometry ? null : object3DorGeom, anims || []);
+      setupAnimations(object3DorGeom.isBufferGeometry ? null : object3DorGeom, anims || [], kind);
       var base = name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").toUpperCase();
       state.fileName = name;
       $("inpTitle").value = base;
@@ -663,26 +668,127 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     refreshAtmo();
   }
 
+  /* ---------- ammo.js（1.3.0：MMD 物理） ---------- */
+  var ammoReady = false, ammoPromise = null;
+  function ensureAmmo() {
+    if (ammoReady) return Promise.resolve(true);
+    if (ammoPromise) return ammoPromise;
+    if (typeof window.Ammo !== "function") return Promise.resolve(false); // script 未加载
+    // WKWebView 禁止 fetch(file://)，wasm 字节经 holo:// 自定义 scheme 取回
+    var wasmURL = libBaseURL() + "ammo.wasm.wasm";
+    ammoPromise = fetch(wasmURL)
+      .then(function (r) { if (!r.ok) throw new Error("ammo wasm " + r.status); return r.arrayBuffer(); })
+      // 注意：bundle 内是严格模式，裸调 Ammo() 的 this 为 undefined；
+      // 必须写成 window.Ammo(...) 让 emscripten 内部的 this.Ammo = instance 能挂上全局
+      .then(function (buf) { return window.Ammo({ wasmBinary: new Uint8Array(buf) }); })
+      .then(function () {
+        ammoReady = !!(window.Ammo && window.Ammo.btVector3);
+        var cb = $("inpPhys");
+        if (cb) { cb.disabled = !ammoReady; if (!ammoReady) cb.checked = false; }
+        // 就绪提示：用户据此判断「物理模拟」开关为何可用 / 不可用
+        if (ammoReady && !state.fileName) {
+          statusEl.textContent = "READY — 物理引擎已就绪（ammo.js）— 拖入 PMX / PMD 后可开启物理";
+        }
+        return ammoReady;
+      })
+      .catch(function () {
+        ammoReady = false;
+        var cb = $("inpPhys");
+        if (cb) { cb.disabled = true; cb.checked = false; }
+        return false;
+      });
+    return ammoPromise;
+  }
+
+  /* ---------- PMX/PMD：MMDAnimationHelper 接管 IK + grant + 物理（1.3.0） ---------- */
+  var mmdHelper = null, mmdMesh = null, mmdVmdClip = null, mmdVmdName = "";
+  var pendingVmdUrl = "", pendingVmdName = ""; // 模型尚未载入时先记住拖入的 .vmd
+
+  function mmdObjects() {
+    if (!mmdHelper || !mmdMesh) return null;
+    var o = mmdHelper.objects.get(mmdMesh);
+    return (o && o.physics) ? o : null;
+  }
+  function applyPhysicsParams() {
+    var o = mmdObjects();
+    if (!o) return;
+    o.physics.setGravity(new THREE.Vector3(0, -9.8 * 10 * state.physGravity, 0));
+    // 强度：步长越细 + 子步越多 → 模拟越硬、越贵
+    o.physics.unitStep = (1 / 65) / state.physStrength;
+    o.physics.maxStepNum = Math.max(1, Math.round(3 * state.physStrength));
+  }
+  function applyPhysics() {
+    if (!mmdHelper) return;
+    mmdHelper.enable("physics", !!(state.physOn && ammoReady));
+    applyPhysicsParams();
+  }
+  /** 按当前 state 重建 helper（切换物理开关 / 挂上新 VMD 时调用） */
+  function rebuildMMD() {
+    if (mmdHelper && mmdMesh) { try { mmdHelper.remove(mmdMesh); } catch (e) { /* 忽略 */ } }
+    mmdHelper = null; mixer = null; animAction = null;
+    if (!mmdMesh) return;
+    var usePhys = !!(state.physOn && ammoReady);
+    var helper = new MMDAnimationHelper({ sync: false, resetPhysicsOnLoop: true });
+    var p = { physics: usePhys };
+    if (usePhys) p.warmup = 10; // 默认 60 步首帧会明显顿一下
+    if (mmdVmdClip) p.animation = mmdVmdClip;
+    helper.add(mmdMesh, p);
+    mmdHelper = helper;
+    var objs = helper.objects.get(mmdMesh);
+    mixer = objs ? objs.mixer : null;
+    animClips = mmdVmdClip ? [mmdVmdClip] : [];
+    animClipIdx = 0; animAction = null;
+    refreshAnimUI();
+    applyPhysicsParams();
+  }
+  /** 载入 VMD 动作（由原生层拖入 .vmd 时调用） */
+  function loadVMD(url, name) {
+    if (!mmdMesh) {
+      // 还没有 PMX/PMD：先排队，模型载入后自动套用
+      pendingVmdUrl = url; pendingVmdName = name || "";
+      hideError();
+      statusEl.textContent = "VMD 已排队（" + String(name || "").toUpperCase() + "）—— 拖入 PMX / PMD 后自动套用";
+      return;
+    }
+    hideError();
+    statusEl.textContent = "LOADING VMD " + String(name || "").toUpperCase() + " ...";
+    new MMDLoader().loadAnimation(url, mmdMesh, function (clip) {
+      mmdVmdClip = clip; mmdVmdName = name || "";
+      state.vmdUrl = url; state.vmdName = mmdVmdName;
+      rebuildMMD();
+      var el = $("mmdHint");
+      if (el) el.textContent = "动作已套用：" + mmdVmdName + (mmdVmdClip.duration ? "（" + mmdVmdClip.duration.toFixed(1) + "s）" : "");
+      statusEl.textContent = "VMD " + String(name || "").toUpperCase() + " — 已套用（" + animClips.length + " 段）";
+    }, undefined, function (e) {
+      showError("VMD 载入失败: " + (e && e.message ? e.message : e));
+    });
+  }
+  window.holoLoadVMD = loadVMD;
+
   /* ---------- 骨骼动画播放（1.2.4：GLB/glTF/FBX 自带动画） ---------- */
   var mixer = null, animClips = [], animAction = null, animClipIdx = 0;
   var anim = { paused: false, speed: 1, loop: "repeat", scrubbing: false };
-  var LOOP_MODES = [
-    ["repeat", "循环", THREE.LoopRepeat],
-    ["once", "单次", THREE.LoopOnce],
-    ["pingpong", "往返", THREE.LoopPingPong]
-  ];
-  function setupAnimations(object3D, clips) {
-    mixer = null; animClips = []; animAction = null; animClipIdx = 0;
-    var ui = $("animUI"), hint = $("animHint");
-    if (!object3D || !clips || !clips.length) { ui.style.display = "none"; hint.style.display = ""; return; }
-    mixer = new THREE.AnimationMixer(object3D);
-    animClips = clips;
+  /** 按 animClips 刷新动画面板（普通模型与 PMX 共用） */
+  function refreshAnimUI() {
+    var ui = $("animUI"), hint = $("animHint"), mmd = $("mmdUI");
+    var isMMD = !!mmdMesh;
+    if (mmd) mmd.style.display = isMMD ? "" : "none";
+    if (!animClips.length) {
+      ui.style.display = "none";
+      if (hint) {
+        hint.style.display = "";
+        hint.textContent = isMMD
+          ? "当前 PMX 无动作数据 —— 拖入 .vmd 文件即可播放"
+          : "当前模型无动画数据";
+      }
+      return;
+    }
     var sel = $("selClip");
     sel.innerHTML = "";
-    clips.forEach(function (c, i) {
+    animClips.forEach(function (c, i) {
       var op = document.createElement("option");
       op.value = i;
-      op.textContent = (c.name || "clip " + (i + 1)).substring(0, 28);
+      op.textContent = ((c.name || (isMMD ? "VMD " + mmdVmdName : "clip " + (i + 1))) + "").substring(0, 28);
       sel.appendChild(op);
     });
     sel.onchange = function () { playAnimClip(+this.value); };
@@ -693,6 +799,37 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     $("btnPlay").textContent = "暂停";
     ui.style.display = ""; hint.style.display = "none";
     playAnimClip(0);
+  }
+  var LOOP_MODES = [
+    ["repeat", "循环", THREE.LoopRepeat],
+    ["once", "单次", THREE.LoopOnce],
+    ["pingpong", "往返", THREE.LoopPingPong]
+  ];
+  function setupAnimations(object3D, clips, kind) {
+    mmdHelper = null; mixer = null; animClips = []; animAction = null; animClipIdx = 0;
+    if (kind === "mmd" && object3D && object3D.isSkinnedMesh) {
+      // PMX/PMD：交给 MMDAnimationHelper（IK / grant / 物理），动作来源于拖入的 .vmd
+      mmdMesh = object3D;
+      mmdVmdClip = null; mmdVmdName = ""; state.vmdUrl = ""; state.vmdName = "";
+      rebuildMMD();
+      var mh = $("mmdHint");
+      if (mh) mh.textContent = "拖入 .vmd 文件可套用动作（MikuMikuDance 动作数据）";
+      if (pendingVmdUrl) { // 排队中的动作立即套用
+        var pu = pendingVmdUrl, pn = pendingVmdName;
+        pendingVmdUrl = ""; pendingVmdName = "";
+        loadVMD(pu, pn);
+      }
+      // 首次加载时 ammo 可能仍在预热；就绪后补上物理（已有物理对象则跳过，避免重置进度）
+      if (!ammoReady) ensureAmmo().then(function () {
+        if (mmdMesh && state.physOn && !mmdObjects()) rebuildMMD();
+      });
+      return;
+    }
+    mmdMesh = null; mmdVmdClip = null; mmdVmdName = "";
+    if (!object3D || !clips || !clips.length) { refreshAnimUI(); return; }
+    mixer = new THREE.AnimationMixer(object3D);
+    animClips = clips;
+    refreshAnimUI();
   }
   function playAnimClip(idx) {
     if (!mixer || !animClips[idx]) return;
@@ -732,7 +869,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     if (!mixer || !animAction) return;
     var clip = animClips[animClipIdx];
     animAction.time = (+this.value / 1000) * clip.duration;
-    if (anim.paused) mixer.update(0); // 暂停时手动采样一帧应用姿态
+    if (mmdHelper) mmdHelper.update(0);       // 1.3.0：PMX 需经 helper 应用 IK/物理
+    else if (anim.paused) mixer.update(0); // 暂停时手动采样一帧应用姿态
   };
   $("inpAProg").onchange = function () { anim.scrubbing = false; };
 
@@ -878,6 +1016,26 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     state.swayAmp = +this.value / 100;
     $("valSwayAmp").textContent = state.swayAmp.toFixed(1);
   };
+  // 物理（1.3.0）：仅 PMX/PMD 有效；Ammo 未就绪时复选框禁用
+  $("inpPhys").disabled = true;
+  $("inpPhys").onchange = function () {
+    state.physOn = this.checked;
+    if (!mmdMesh) return;
+    // 首次开启需重建 helper 才会创建物理对象；之后仅需切换 enabled，动画进度不重置
+    if (state.physOn && ammoReady && !mmdObjects()) rebuildMMD();
+    else applyPhysics();
+  };
+  $("inpPhysG").oninput = function () {
+    state.physGravity = +this.value / 100;
+    $("valPhysG").textContent = state.physGravity.toFixed(1);
+    applyPhysicsParams();
+  };
+  $("inpPhysS").oninput = function () {
+    state.physStrength = +this.value / 100;
+    $("valPhysS").textContent = state.physStrength.toFixed(1);
+    applyPhysicsParams();
+  };
+  ensureAmmo(); // 启动即预热，PMX 载入时通常已就绪
   // 隐藏环中心点（1.2.10）：刻度盘/魔法阵中央圆点，自由(SVG)+经典(3D)均生效
   $("inpHideDot").onchange = function () {
     state.hideCenterDot = this.checked;
@@ -996,6 +1154,11 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     state.parallaxOn = false; $("inpParallax").checked = false; modelRoot.rotation.z = 0;
     state.swayOn = false; $("inpSway").checked = false;
     state.swayAmp = 1.0; $("inpSwayAmp").value = 100; $("valSwayAmp").textContent = "1.0";
+    // 物理（1.3.0）回到默认：关闭 + 重力/强度 100%
+    state.physOn = false; $("inpPhys").checked = false;
+    state.physGravity = 1.0; $("inpPhysG").value = 100; $("valPhysG").textContent = "1.0";
+    state.physStrength = 1.0; $("inpPhysS").value = 100; $("valPhysS").textContent = "1.0";
+    applyPhysics();
     state.pulseOn = false; $("inpPulse").checked = false; refreshAtmo();
     gridGroup.visible = true; $("inpGrid").checked = true;
     $("hud").style.display = ""; $("inpHud").checked = true;
@@ -1171,6 +1334,56 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function escapeHtml(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
+  /* ---------- 导出烘焙（1.3.0）：把 VMD 动作 + 物理逐帧采样成骨骼关键帧 ----------
+   * 导出的单文件网页不带 ammo（体积 +1MB 且需 wasm），改为把 IK/grant/物理的
+   * 最终骨骼姿态直接烘焙进 GLB 动画轨道，查看器照常播放。 */
+  function trackMoved(arr, stride) {
+    for (var i = stride; i < arr.length; i += stride) {
+      for (var k = 0; k < stride; k++) {
+        if (Math.abs(arr[i + k] - arr[k]) > 1e-5) return true;
+      }
+    }
+    return false;
+  }
+  function bakeMMDClip() {
+    if (!mmdHelper || !mmdMesh || !mmdVmdClip) return null;
+    var sk = mmdMesh.skeleton;
+    if (!sk || !sk.bones || !sk.bones.length) return null;
+    var duration = mmdVmdClip.duration || 0;
+    if (!(duration > 0)) return null;
+    var bones = sk.bones;
+    var n = Math.min(900, Math.max(2, Math.round(duration * 30))); // 30fps 上限 900 帧（30s）
+    var dt = duration / n;
+    var times = new Float32Array(n + 1);
+    var pos = [], quat = [];
+    bones.forEach(function () { pos.push(new Float32Array((n + 1) * 3)); quat.push(new Float32Array((n + 1) * 4)); });
+    var savedTime = animAction ? animAction.time : 0;
+    var ph = mmdObjects();
+    if (ph) ph.physics.reset();              // 物理从稳定初始态开始采样
+    if (animAction) animAction.time = 0;
+    mmdHelper.update(0);
+    for (var f = 0; f <= n; f++) {
+      times[f] = f * dt;
+      for (var bi = 0; bi < bones.length; bi++) {
+        var b = bones[bi];
+        pos[bi][f * 3] = b.position.x; pos[bi][f * 3 + 1] = b.position.y; pos[bi][f * 3 + 2] = b.position.z;
+        quat[bi][f * 4] = b.quaternion.x; quat[bi][f * 4 + 1] = b.quaternion.y;
+        quat[bi][f * 4 + 2] = b.quaternion.z; quat[bi][f * 4 + 3] = b.quaternion.w;
+      }
+      mmdHelper.update(dt);                   // 同步循环，期间不会插入 rAF
+    }
+    if (animAction) animAction.time = savedTime;
+    mmdHelper.update(0);                     // 把画面拨回导出前的进度
+    var tracks = [];
+    for (var k = 0; k < bones.length; k++) {
+      var nm = bones[k].name;
+      if (!nm || nm.indexOf(".") >= 0 || nm.indexOf("[") >= 0) continue; // 轨道名含分隔符无法绑定
+      if (trackMoved(pos[k], 3)) tracks.push(new THREE.VectorKeyframeTrack(nm + ".position", times, pos[k]));
+      if (trackMoved(quat[k], 4)) tracks.push(new THREE.QuaternionKeyframeTrack(nm + ".quaternion", times, quat[k]));
+    }
+    if (!tracks.length) return null;
+    return new THREE.AnimationClip("vmd_baked", duration, tracks);
+  }
   $("btnHtml").onclick = function () {
     var btn = this;
     if (exporting || !srcMeshes.length) return;
@@ -1190,6 +1403,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       ui: uiColors,
       speed: state.speed, bobOn: state.bobOn, bobAmp: state.bobAmp, parallax: state.parallaxOn,
       swayOn: state.swayOn, swayAmp: state.swayAmp, hideDot: state.hideCenterDot, // 1.2.10
+      physOn: state.physOn, physGravity: state.physGravity, physStrength: state.physStrength, // 1.3.0
+      vmd: state.vmdName || "",           // 1.3.0: 已套用的 VMD 名称（查看器提示用）
       pulse: state.pulseOn, bloom: bloomBase, atmo: state.atmo,
       grid: gridGroup.visible, hud: $("inpHud").checked,
       anim: !!(mixer && animClips.length),
@@ -1197,6 +1412,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       ringMode: state.ringMode,
       ringAnchor: state.ringAnchor
     };
+    // 1.3.0: PMX 场景先把 VMD 动作 + 物理逐帧烘焙成骨骼关键帧，随 GLB 一起走
+    var exportClips = animClips.slice();
+    if (mmdHelper && mmdMesh && mmdVmdClip) {
+      statusEl.textContent = "BAKING MMD ANIMATION ...";
+      var baked = null;
+      try { baked = bakeMMDClip(); } catch (e) { baked = null; }
+      if (baked) exportClips = [baked];
+    }
+    cfg.anim = !!exportClips.length;
     var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_holo.html";
     new GLTFExporter().parse(exportRoot, function (glb) {
       fullGroup.add(src); // 放回
@@ -1220,7 +1444,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     }, function (err) {
       fullGroup.add(src);
       finishExport("导出失败: " + (err && err.message ? err.message : err));
-    }, { binary: true, animations: animClips });
+    }, { binary: true, animations: exportClips });
   };
 
   function downloadData(url, name) {
@@ -1272,7 +1496,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     var dt = Math.min((now - last) / 1000, 0.1); last = now;
     tAcc += dt;
     // 骨骼动画（1.2.4）：导出时也持续采样，帧序列里动画随旋转同步演进
-    if (mixer && !anim.scrubbing) mixer.update(dt);
+    // 1.3.0：PMX 走 MMDAnimationHelper，内部按 mixer → IK/grant → physics 顺序推进
+    if (mmdHelper) { if (!anim.scrubbing) mmdHelper.update(dt); }
+    else if (mixer && !anim.scrubbing) mixer.update(dt);
     if (mixer && animAction && !anim.scrubbing) {
       var clip = animClips[animClipIdx];
       var p = clip.duration ? Math.min(1, animAction.time / clip.duration) : 0;
@@ -1301,5 +1527,5 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     composer.render();
   })(last);
 
-  statusEl.textContent = "READY — 滚轮缩放 · 左键拖动视角 · 右键复位 — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP";
+  statusEl.textContent = "READY — 滚轮缩放 · 左键拖动视角 · 右键复位 — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP（PMX 可再拖 .vmd 动作）";
 })();

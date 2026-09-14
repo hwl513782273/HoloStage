@@ -116,7 +116,7 @@ final class BrandHeader: NSView {
             .applicationName: "HoloStage",
             .applicationVersion: version,
             .version: version,
-            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\n渲染引擎 three.js r170 + tinyusdz（本地内置，离线可用）")
+            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
         ])
     }
 }
@@ -194,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             .applicationName: "HoloStage",
             .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
             .version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
-            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\n渲染引擎 three.js r170 + tinyusdz（本地内置，离线可用）")
+            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
         ])
     }
 
@@ -242,8 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.allowedFileTypes = ["stl", "obj", "gltf", "glb", "ply", "fbx", "pmx", "pmd", "usdz", "usd", "zip"]
-        panel.message = "选择 3D 模型文件（STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP 包）"
+        panel.allowedFileTypes = ["stl", "obj", "gltf", "glb", "ply", "fbx", "pmx", "pmd", "usdz", "usd", "vmd", "zip"]
+        panel.message = "选择 3D 模型文件（STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP 包；PMX 可搭配 .vmd 动作）"
         panel.begin { [weak self] resp in
             guard resp == .OK, let url = panel.url else { return }
             self?.loadModel(at: url)
@@ -274,13 +274,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     private func loadModel(at url: URL) {
-        if url.pathExtension.lowercased() == "zip" {
+        let ext = url.pathExtension.lowercased()
+        if ext == "zip" {
             loadFromZip(at: url)
             return
         }
         // 转成 holo:// scheme URL，让 JS 侧 three.js loader 能 fetch 到字节
         let enc = url.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? url.path
         let safeName = url.lastPathComponent.replacingOccurrences(of: "\"", with: "")
+        // 1.3.0: VMD 动作文件 —— 挂到当前 PMX/PMD 模型上（尚无模型时由 JS 侧排队）
+        if ext == "vmd" {
+            webView.evaluateJavaScript(
+                "window.holoLoadVMD && window.holoLoadVMD(\"holo://f/\(enc)\", \"\(safeName)\");",
+                completionHandler: nil)
+            return
+        }
         let js = "window.holoLoadFile && window.holoLoadFile(\"holo://f/\(enc)\", \"\(safeName)\");"
         webView.evaluateJavaScript(js, completionHandler: nil)
     }

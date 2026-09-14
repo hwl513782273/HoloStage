@@ -4,3 +4,4 @@ staging/
 .DS_Store
 AppIcon.iconset/
 AppIcon.icns
+web/src/node_modules
