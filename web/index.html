@@ -216,7 +216,13 @@
       <option value="red">红</option>
       <option value="gold">金</option>
       <option value="ice">冰蓝</option>
+      <option value="custom">自定义…</option>
     </select>
+    <div class="row" id="customColorRow" style="display:none;margin-top:4px;">
+      <label>自定义色</label>
+      <span><input type="color" id="inpCustomPick" value="#3fb9ff" style="width:30px;height:20px;border:none;background:none;padding:0;vertical-align:middle;cursor:pointer">
+      <input type="text" id="inpCustomHex" value="#3fb9ff" maxlength="7" spellcheck="false" style="width:78px"></span>
+    </div>
     <div class="row"><label>渲染方式</label></div>
     <select id="selRender">
       <option value="wire" selected>线框全息</option>
@@ -261,6 +267,9 @@
     <div class="row"><label>呼吸幅度</label><span id="valBobAmp">1.0</span></div>
     <input type="range" id="inpBobAmp" min="10" max="300" value="100" style="width:100%">
     <div class="row"><label>鼠标视差</label><input type="checkbox" id="inpParallax"></div>
+    <div class="row"><label>待机摆动</label><input type="checkbox" id="inpSway"></div>
+    <div class="row"><label>摆动幅度</label><span id="valSwayAmp">1.0</span></div>
+    <input type="range" id="inpSwayAmp" min="10" max="300" value="100" style="width:100%">
     <div class="row"><label>辉光脉冲</label><input type="checkbox" id="inpPulse"></div>
     <div class="row"><label>网格地台</label><input type="checkbox" id="inpGrid" checked></div>
     <div class="row"><label>HUD 叠加层</label><input type="checkbox" id="inpHud" checked></div>
@@ -282,6 +291,8 @@
       <option value="model" selected>模型中点（跟随模型）</option>
       <option value="world">世界中心（1.2.7 行为）</option>
     </select>
+    <div class="row" style="margin-top:6px;"><label>隐藏环中心点</label><input type="checkbox" id="inpHideDot"></div>
+    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">隐藏刻度盘/魔法阵样式中央的圆点（自由与经典模式均生效）</div>
     <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">经典模式：环在 3D 场景内随视角透视；环心可选跟随模型中点或世界中心；各环六参数全部生效（X/Y 跟手位移、大小缩放、俯仰/偏航/滚转）</div>
 
     <h2>全息环 ①</h2>

@@ -142,7 +142,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     });
     ring3dMeshes = [];
     state.rings.forEach(function (rg, i) {
-      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)));
+      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)), state.hideCenterDot);
       var tex = new THREE.CanvasTexture(made.canvas);
       tex.anisotropy = 4;
       var mesh = new THREE.Mesh(
@@ -198,6 +198,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     bobOn: true, bobAmp: 1.0,           // 1.2.4: 悬浮呼吸
     parallaxOn: false,                  // 1.2.4: 鼠标视差
     pulseOn: false,                     // 1.2.4: 辉光脉冲
+    swayOn: false, swayAmp: 1.0,        // 1.2.10: 待机摆动（轻微摇摆/倾斜）
+    hideCenterDot: false,               // 1.2.10: 隐藏刻度盘/魔法阵中央圆点
+    customColor: null,                  // 1.2.10: 自定义配色 #rrggbb（存入 PRESETS.custom）
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
@@ -489,7 +492,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   (function buildHUD() {
     // 1.2.5: 环内容由 rings.js 样式库生成（每环可独立切换样式）
     ringWraps.forEach(function (wrap, i) {
-      wrap.innerHTML = buildRingSVG(state.rings[i].style, i + 1);
+      wrap.innerHTML = buildRingSVG(state.rings[i].style, i + 1, state.hideCenterDot);
     });
     // 底部进度条
     for (var b = 0; b < 22; b++) {
@@ -578,6 +581,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   }
 
   function applyPreset(name) {
+    if (name === "custom" && !PRESETS.custom) return; // 自定义色尚未设置
     currentPreset = name;
     var p = PRESETS[name];
     // 1.2.2: --holo 系只作用于舞台内 HUD（环/标题/进度条/四角）；面板用固定 --ui 不受影响
@@ -868,6 +872,20 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     state.parallaxOn = this.checked;
     if (!state.parallaxOn) modelRoot.rotation.z = 0;
   };
+  // 待机摆动（1.2.10）：轻微左右摇摆/倾斜，可与其他动作叠加
+  $("inpSway").onchange = function () { state.swayOn = this.checked; };
+  $("inpSwayAmp").oninput = function () {
+    state.swayAmp = +this.value / 100;
+    $("valSwayAmp").textContent = state.swayAmp.toFixed(1);
+  };
+  // 隐藏环中心点（1.2.10）：刻度盘/魔法阵中央圆点，自由(SVG)+经典(3D)均生效
+  $("inpHideDot").onchange = function () {
+    state.hideCenterDot = this.checked;
+    ringWraps.forEach(function (wrap, i) {
+      wrap.innerHTML = buildRingSVG(state.rings[i].style, i + 1, state.hideCenterDot);
+    });
+    rebuildRing3D();
+  };
   $("inpPulse").onchange = function () {
     state.pulseOn = this.checked;
     if (!state.pulseOn) refreshAtmo();
@@ -885,8 +903,24 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       if (srcMeshes.length) normalizeModel();
     };
   });
-  // 配色下拉（1.2）
-  $("selPreset").onchange = function () { applyPreset(this.value); };
+  // 配色下拉（1.2；1.2.10 加自定义 #RRGGBB）
+  $("selPreset").onchange = function () {
+    $("customColorRow").style.display = this.value === "custom" ? "" : "none";
+    applyPreset(this.value);
+  };
+  function applyCustomColor(hex) {
+    hex = (hex || "").trim().toLowerCase();
+    if (!/^#[0-9a-f]{6}$/.test(hex)) { statusEl.textContent = "无效颜色（需 #RRGGBB 格式）"; return; }
+    state.customColor = hex;
+    $("inpCustomPick").value = hex;
+    $("inpCustomHex").value = hex;
+    PRESETS.custom = { main: parseInt(hex.slice(1), 16), css: hex,
+      g1: shadeHex(hex, 0.62), g2: shadeHex(hex, 0.30) };
+    applyPreset("custom");
+    statusEl.textContent = "配色: CUSTOM " + hex.toUpperCase();
+  }
+  $("inpCustomHex").onchange = function () { applyCustomColor(this.value); };
+  $("inpCustomPick").oninput = function () { applyCustomColor(this.value); };
   // 渲染方式 / 全彩氛围（1.2.2）
   $("selRender").onchange = function () { state.render = this.value; applyRender(); };
   $("inpAtmo").onchange = function () { state.atmo = this.checked; refreshAtmo(); };
@@ -920,7 +954,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     sel.onchange = function () {
       var n = +this.dataset.ring;
       state.rings[n - 1].style = this.value;
-      ringWraps[n - 1].innerHTML = buildRingSVG(this.value, n);
+      ringWraps[n - 1].innerHTML = buildRingSVG(this.value, n, state.hideCenterDot);
       rebuildRing3D(); // 1.2.7: 经典模式下换样式要重建 3D 环纹理
     };
   });
@@ -960,6 +994,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     state.bobOn = true; $("inpBob").checked = true;
     state.bobAmp = 1.0; $("inpBobAmp").value = 100; $("valBobAmp").textContent = "1.0";
     state.parallaxOn = false; $("inpParallax").checked = false; modelRoot.rotation.z = 0;
+    state.swayOn = false; $("inpSway").checked = false;
+    state.swayAmp = 1.0; $("inpSwayAmp").value = 100; $("valSwayAmp").textContent = "1.0";
     state.pulseOn = false; $("inpPulse").checked = false; refreshAtmo();
     gridGroup.visible = true; $("inpGrid").checked = true;
     $("hud").style.display = ""; $("inpHud").checked = true;
@@ -1153,6 +1189,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       preset: { css: PRESETS[currentPreset].css, main: PRESETS[currentPreset].main, g1: PRESETS[currentPreset].g1 },
       ui: uiColors,
       speed: state.speed, bobOn: state.bobOn, bobAmp: state.bobAmp, parallax: state.parallaxOn,
+      swayOn: state.swayOn, swayAmp: state.swayAmp, hideDot: state.hideCenterDot, // 1.2.10
       pulse: state.pulseOn, bloom: bloomBase, atmo: state.atmo,
       grid: gridGroup.visible, hud: $("inpHud").checked,
       anim: !!(mixer && animClips.length),
@@ -1246,6 +1283,10 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       spinAngle += state.speed * dt;
       var yaw = spinAngle, roll = 0;
       if (state.parallaxOn) { yaw += mousePar.x * 0.22; roll = mousePar.y * 0.1; }
+      if (state.swayOn) { // 1.2.10: 待机摆动（慢频摇摆 + 轻微侧倾）
+        yaw += Math.sin(tAcc * 0.8) * 0.06 * state.swayAmp;
+        roll += Math.sin(tAcc * 0.6) * 0.035 * state.swayAmp;
+      }
       modelRoot.rotation.y = yaw;
       modelRoot.rotation.z = roll;
       modelRoot.position.y = modelBaseY +

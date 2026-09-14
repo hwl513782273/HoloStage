@@ -17,7 +17,7 @@ export function ring3dSpin(style) {
   }
 }
 
-export function drawRingCanvas(style, color) {
+export function drawRingCanvas(style, color, hideDot) {
   var cv = document.createElement("canvas");
   cv.width = 1200; cv.height = 1200;
   var x = cv.getContext("2d");
@@ -71,7 +71,7 @@ export function drawRingCanvas(style, color) {
       x.stroke();
     }
     x.globalAlpha = 1;
-    dot(0, 0, 3, 0.7);
+    if (!hideDot) dot(0, 0, 3, 0.7);
 
   } else if (style === "dash") {
     circle(250, 2, 0.5, [18, 12]);
@@ -105,7 +105,7 @@ export function drawRingCanvas(style, color) {
     circle(70, 1, 0.4);
     x.beginPath(); x.arc(272, 0, 6, 0, TAU);
     x.strokeStyle = color; x.lineWidth = 1.5; x.globalAlpha = 1; x.stroke();
-    dot(0, 0, 7, 0.9);
+    if (!hideDot) dot(0, 0, 7, 0.9);
 
   } else { /* data 数据弧 */
     x.lineCap = "round";

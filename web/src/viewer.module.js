@@ -86,7 +86,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
   var wraps = [1, 2, 3].map(function (n) { return document.getElementById("rw" + n); });
   var rings = CFG.rings || [{ style: "seg", x: 0, y: 0, s: 100, p: 0, r: 0, w: 0 }, { style: "dial", x: 0, y: 0, s: 100, p: 0, r: 0, w: 0 }, { style: "dash", x: 0, y: 0, s: 86, p: 18, r: -12, w: 0 }];
   rings.forEach(function (rg, i) {
-    wraps[i].innerHTML = buildRingSVG(rg.style, i + 1);
+    wraps[i].innerHTML = buildRingSVG(rg.style, i + 1, CFG.hideDot);
     wraps[i].style.color = partColor("ring" + (i + 1));
   });
   function applyRings() {
@@ -139,7 +139,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
     });
     ring3dMeshes = [];
     rings.forEach(function (rg, i) {
-      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)));
+      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)), CFG.hideDot);
       var tex = new THREE.CanvasTexture(made.canvas);
       tex.anisotropy = 4;
       var mesh = new THREE.Mesh(
@@ -303,8 +303,10 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
     tAcc += dt;
     if (mixer) mixer.update(dt);
     spin += (CFG.speed || 0.5) * dt;
-    root.rotation.y = spin + (CFG.parallax ? mousePar.x * 0.22 : 0);
-    root.rotation.z = CFG.parallax ? mousePar.y * 0.1 : 0;
+    root.rotation.y = spin + (CFG.parallax ? mousePar.x * 0.22 : 0) +
+      (CFG.swayOn ? Math.sin(tAcc * 0.8) * 0.06 * (CFG.swayAmp || 1) : 0); // 1.2.10 摆动
+    root.rotation.z = (CFG.parallax ? mousePar.y * 0.1 : 0) +
+      (CFG.swayOn ? Math.sin(tAcc * 0.6) * 0.035 * (CFG.swayAmp || 1) : 0);
     root.position.y = CFG.bobOn ? Math.sin(tAcc * 1.7) * 0.055 * (CFG.bobAmp || 1) : 0;
     updateRings3D(dt); // 1.2.8: 环心跟随 + 六参数跟手映射 + 平面内自转
     if (CFG.pulse) bloom.strength = bloomBase * (1 + 0.22 * Math.sin(tAcc * 2.3));

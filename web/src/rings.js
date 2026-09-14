@@ -19,7 +19,7 @@ export function ringStyleLabel(style) {
 }
 
 /* 六芒星顶点（r=190, cx=300）：(300,110) (464.5,395) (135.5,395) 及其 180° 翻转 */
-export function buildRingSVG(style, seed) {
+export function buildRingSVG(style, seed, hideDot) {
   var cx = 300;
   var uid = "holoRing" + seed + "_";
   var inner = "";
@@ -48,7 +48,7 @@ export function buildRingSVG(style, seed) {
         '" x2="' + (cx + r1 * Math.cos(ta)) + '" y2="' + (cx + r1 * Math.sin(ta)) +
         '" stroke="currentColor" stroke-width="' + (i % 5 === 0 ? 2.5 : 1) + '" stroke-opacity="0.4"/>';
     }
-    ticks += '<circle cx="300" cy="300" r="3" fill="currentColor" opacity="0.7"/>';
+    if (!hideDot) ticks += '<circle cx="300" cy="300" r="3" fill="currentColor" opacity="0.7"/>';
     inner = '<g class="ringSpinRev">' + ticks + '</g>';
 
   } else if (style === "dash") {
@@ -81,8 +81,7 @@ export function buildRingSVG(style, seed) {
       '<g class="ringSpin">' +
         '<circle cx="300" cy="300" r="70" fill="none" stroke="currentColor" stroke-width="1" stroke-opacity="0.4"/>' +
         '<circle cx="572" cy="300" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
-      '</g>' +
-      '<circle cx="300" cy="300" r="7" fill="currentColor" opacity="0.9"/>';
+      '</g>' + (hideDot ? '' : '<circle cx="300" cy="300" r="7" fill="currentColor" opacity="0.9"/>');
 
   } else { /* data 数据弧 */
     var dtp = uid + "lbl";
