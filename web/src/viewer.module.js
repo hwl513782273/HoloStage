@@ -67,7 +67,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
     '<div class="corner" id="c-tl"></div><div class="corner" id="c-tr"></div>' +
     '<div class="corner" id="c-bl"></div><div class="corner" id="c-br"></div>' +
     '<div id="scanline"></div></div></div>' +
-    '<div id="hint">HOLOSTAGE EXPORT — 滚轮缩放 · 左键拖动视角 · 右键复位</div>');
+    '<div id="hint">HOLOSTAGE EXPORT — 滚轮缩放 · 拖动视角 · ⌘/⌥+拖动 = 360° 自由视角 · 右键复位</div>');
   var stageEl = document.getElementById("stage");
   var canvas = document.getElementById("gl");
   var hudEl = document.getElementById("hud");
@@ -84,7 +84,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
 
   /* ---------- 三环 ---------- */
   var wraps = [1, 2, 3].map(function (n) { return document.getElementById("rw" + n); });
-  var rings = CFG.rings || [{ style: "seg", x: 0, y: 0, s: 100, p: 0, r: 0, w: 0 }, { style: "dial", x: 0, y: 0, s: 100, p: 0, r: 0, w: 0 }, { style: "dash", x: 0, y: 0, s: 86, p: 18, r: -12, w: 0 }];
+  var rings = CFG.rings || [{ style: "seg", x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false }, { style: "dial", x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false }, { style: "dash", x: 0, y: 0, z: 0, s: 86, p: 18, r: -12, w: 0, zu: false }];
   rings.forEach(function (rg, i) {
     wraps[i].innerHTML = buildRingSVG(rg.style, i + 1, CFG.hideDot);
     wraps[i].style.color = partColor("ring" + (i + 1));
@@ -100,7 +100,8 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
       wraps[i].style.width = size + "px";
       wraps[i].style.height = size + "px";
       wraps[i].style.transform = "translate(calc(-50% + " + rg.x + "px), calc(-50% + " + rg.y + "px))" +
-        " rotateX(" + rg.p + "deg) rotateY(" + rg.w + "deg) rotateZ(" + rg.r + "deg)";
+        " translateZ(" + (rg.z || 0) + "px)" +
+        " rotateX(" + (rg.p + (rg.zu ? -90 : 0)) + "deg) rotateY(" + rg.w + "deg) rotateZ(" + rg.r + "deg)";
     });
   }
 
@@ -117,6 +118,10 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
   var CAM_TARGET = new THREE.Vector3(0, 0.85, 0);
   var CAM_HOME = { yaw: 0, pitch: Math.asin(0.85 / Math.sqrt(0.85 * 0.85 + 4.8 * 4.8)), dist: Math.sqrt(0.85 * 0.85 + 4.8 * 4.8) };
   var camYaw = CAM_HOME.yaw, camPitch = CAM_HOME.pitch, camDist = CAM_HOME.dist, camDrag = null;
+  /* 1.3.2: 与 App 端同构 —— ⌘ / ⌥ + 拖拽 = 自由视角（360°，无地面限制） */
+  var camFree = false;
+  var WORLD_UP = new THREE.Vector3(0, 1, 0);
+  var _orbOff = new THREE.Vector3(), _orbQ = new THREE.Quaternion(), _orbAxis = new THREE.Vector3();
   function updateCamera() {
     camera.position.set(
       CAM_TARGET.x + camDist * Math.cos(camPitch) * Math.sin(camYaw),
@@ -124,6 +129,34 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
       CAM_TARGET.z + camDist * Math.cos(camPitch) * Math.cos(camYaw)
     );
     camera.lookAt(CAM_TARGET);
+  }
+  function syncSpherical() {
+    _orbOff.copy(camera.position).sub(CAM_TARGET);
+    var len = _orbOff.length();
+    if (len > 1e-6) {
+      camDist = len;
+      camYaw = Math.atan2(_orbOff.x, _orbOff.z);
+      camPitch = Math.asin(Math.max(-1, Math.min(1, _orbOff.y / len)));
+    }
+  }
+  function orbitFree(dx, dy) {
+    _orbOff.copy(camera.position).sub(CAM_TARGET);
+    _orbQ.setFromAxisAngle(WORLD_UP, -dx * 0.005);
+    _orbOff.applyQuaternion(_orbQ);
+    camera.up.applyQuaternion(_orbQ);
+    _orbAxis.crossVectors(_orbOff, camera.up);
+    if (_orbAxis.lengthSq() > 1e-8) {
+      _orbAxis.normalize();
+      _orbQ.setFromAxisAngle(_orbAxis, -dy * 0.005);
+      _orbOff.applyQuaternion(_orbQ);
+      camera.up.applyQuaternion(_orbQ);
+    }
+    camera.up.normalize();
+    camDist = _orbOff.length();
+    camera.position.copy(CAM_TARGET).add(_orbOff);
+    camera.lookAt(CAM_TARGET);
+    camFree = true;
+    syncSpherical();
   }
   updateCamera();
 
@@ -154,13 +187,14 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
   }
 
   /* 1.2.8: 经典模式每帧更新 —— 与 App 端同构（环心模型中点/世界中心 + 六参数跟手映射） */
-  var _vRight = new THREE.Vector3(), _vUp = new THREE.Vector3();
+  var _vRight = new THREE.Vector3(), _vUp = new THREE.Vector3(), _vNear = new THREE.Vector3();
   var modelMidY = CAM_TARGET.y; // 模型包围盒竖直中点（GLTF 加载后实测）
   function updateRings3D(dt) {
     if (!ring3dGroup.visible) return;
     camera.updateMatrixWorld();
     _vRight.setFromMatrixColumn(camera.matrixWorld, 0);
     _vUp.setFromMatrixColumn(camera.matrixWorld, 1);
+    _vNear.setFromMatrixColumn(camera.matrixWorld, 2); // 相机后向 → +Z 即"朝观察者"（1.3.2）
     if (CFG.ringAnchor !== "world") {
       ring3dGroup.position.set(0, modelMidY + (root.position.y || 0), 0); // 跟随模型（含呼吸）
     } else {
@@ -173,34 +207,50 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
       if (!m) return;
       m.position.set(0, 0, 0)
         .addScaledVector(_vRight, rg.x * worldPerPx)
-        .addScaledVector(_vUp, -rg.y * worldPerPx); // 屏幕 Y 向下，取负
+        .addScaledVector(_vUp, -rg.y * worldPerPx) // 屏幕 Y 向下，取负
+        .addScaledVector(_vNear, (rg.z || 0) * worldPerPx); // 1.3.2: 深度位移
       m.scale.setScalar(Math.max(0.05, rg.s / 100));
       m.userData.spinAcc = (m.userData.spinAcc || 0) + m.userData.spin * dt;
-      m.rotation.set(rg.p * DEG, rg.w * DEG, rg.r * DEG + m.userData.spinAcc);
+      m.rotation.set((rg.p + (rg.zu ? -90 : 0)) * DEG, rg.w * DEG, rg.r * DEG + m.userData.spinAcc); // 1.3.2: zu 躺平
     });
   }
 
+  /* 相机交互（1.2.6）：滚轮缩放 / 左键拖动视角 / 右键复位
+   * 1.3.2: ⌘ 或 ⌥ + 拖拽 = 自由视角（360°），修饰键直接从鼠标事件读取，免疫"卡键" */
   stageEl.addEventListener("wheel", function (e) {
     e.preventDefault();
-    camDist *= (e.deltaY > 0 ? 1.08 : 1 / 1.08);
-    camDist = Math.max(1.2, Math.min(14, camDist));
-    updateCamera();
+    var f = (e.deltaY > 0 ? 1.08 : 1 / 1.08);
+    if (camFree) {
+      // 自由翻滚姿态：沿当前视线推拉，保持姿态，不跳回球坐标
+      _orbOff.copy(camera.position).sub(CAM_TARGET).normalize();
+      camDist = Math.max(1.2, Math.min(14, camDist * f));
+      camera.position.copy(CAM_TARGET).addScaledVector(_orbOff, camDist);
+      syncSpherical();
+      camera.lookAt(CAM_TARGET);
+    } else {
+      camDist = Math.max(1.2, Math.min(14, camDist * f));
+      updateCamera();
+    }
   }, { passive: false });
   stageEl.addEventListener("mousedown", function (e) {
-    if (e.button === 0) camDrag = { x: e.clientX, y: e.clientY };
+    if (e.button !== 0) return;
+    camDrag = { x: e.clientX, y: e.clientY };
   });
   window.addEventListener("mousemove", function (e) {
     if (!camDrag) return;
     var dx = e.clientX - camDrag.x, dy = e.clientY - camDrag.y;
     camDrag = { x: e.clientX, y: e.clientY };
+    if (e.metaKey || e.altKey) { orbitFree(dx, dy); return; } // 1.3.2: 自由视角，不夹取
     camYaw -= dx * 0.005;
     camPitch = Math.max(-1.2, Math.min(1.45, camPitch + dy * 0.005));
+    camFree = false; camera.up.set(0, 1, 0); // 受限视角的 up 恒为世界 up
     updateCamera();
   });
   window.addEventListener("mouseup", function () { camDrag = null; });
   stageEl.addEventListener("contextmenu", function (e) {
     e.preventDefault();
     camYaw = CAM_HOME.yaw; camPitch = CAM_HOME.pitch; camDist = CAM_HOME.dist;
+    camFree = false; camera.up.set(0, 1, 0); // 1.3.2: 自由翻滚后一并复位 up，否则画面保持倒置
     updateCamera();
   });
   var composer = new EffectComposer(renderer);

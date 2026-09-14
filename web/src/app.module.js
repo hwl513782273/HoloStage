@@ -15,6 +15,8 @@
  * 1.3.1: 修复导出裁切：导出期间像素比压到 1，canvas 缓冲区 = 导出尺寸，
  *        解决 Retina(×2) 下 gif.js 只取左上 1/4 导致「GIF 显示不全」；
  *        PNG 序列/单帧 PNG 的实际像素也随之回到标称分辨率
+ * 1.3.2: 全息环补 Z 轴深度位移 + 单环「Z 轴朝上」躺平；⌘/⌥ + 拖拽 = 360° 自由视角（不受地面限制）；
+ *        原生补标准菜单栏（修 ⌘Q 无法退出）；导出网页查看器同步
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -85,10 +87,18 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   camera.position.set(0, 1.7, 4.8);
   camera.lookAt(0, 0.85, 0);
 
-  /* 相机轨道控制（1.2.6）：滚轮缩放 / 左键拖动视角 / 右键复位 */
+  /* 相机轨道控制（1.2.6）：滚轮缩放 / 左键拖动视角 / 右键复位
+   * 1.3.2: 按住 ⌘ 或 ⌥ 拖拽 = 自由视角（360°，不受地面限制）。
+   *   受限路径仍走球坐标并按 [-1.2, 1.45] 夹取（保持既有手感与"地面"语义）；
+   *   自由路径改走四元数轨迹球：绕世界竖直轴与相机自身右轴累积旋转 offset 与 camera.up，
+   *   因此不存在极角奇点，可连续翻过天顶与地面之下。
+   *   modifier 直接取自鼠标事件（e.metaKey / e.altKey），不留持久按键状态，天然免疫"卡键"。 */
   var CAM_TARGET = new THREE.Vector3(0, 0.85, 0);
   var CAM_HOME = { yaw: 0, pitch: Math.asin(0.85 / Math.sqrt(0.85 * 0.85 + 4.8 * 4.8)), dist: Math.sqrt(0.85 * 0.85 + 4.8 * 4.8) };
   var camYaw = CAM_HOME.yaw, camPitch = CAM_HOME.pitch, camDist = CAM_HOME.dist;
+  var camFree = false; // 是否处于自由翻滚姿态（camera.up 已偏离世界 up）
+  var WORLD_UP = new THREE.Vector3(0, 1, 0);
+  var _orbOff = new THREE.Vector3(), _orbQ = new THREE.Quaternion(), _orbAxis = new THREE.Vector3();
   function updateCamera() {
     camera.position.set(
       CAM_TARGET.x + camDist * Math.cos(camPitch) * Math.sin(camYaw),
@@ -96,6 +106,35 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       CAM_TARGET.z + camDist * Math.cos(camPitch) * Math.cos(camYaw)
     );
     camera.lookAt(CAM_TARGET);
+  }
+  // 自由视角：把当前相机姿态反解回球坐标，供滚轮/复位等既有路径无缝接管
+  function syncSpherical() {
+    _orbOff.copy(camera.position).sub(CAM_TARGET);
+    var len = _orbOff.length();
+    if (len > 1e-6) {
+      camDist = len;
+      camYaw = Math.atan2(_orbOff.x, _orbOff.z);
+      camPitch = Math.asin(Math.max(-1, Math.min(1, _orbOff.y / len)));
+    }
+  }
+  function orbitFree(dx, dy) {
+    _orbOff.copy(camera.position).sub(CAM_TARGET);
+    _orbQ.setFromAxisAngle(WORLD_UP, -dx * 0.005); // 水平：绕世界竖直轴，保留地平线语义
+    _orbOff.applyQuaternion(_orbQ);
+    camera.up.applyQuaternion(_orbQ);
+    _orbAxis.crossVectors(_orbOff, camera.up);     // 相机自身右轴
+    if (_orbAxis.lengthSq() > 1e-8) {
+      _orbAxis.normalize();
+      _orbQ.setFromAxisAngle(_orbAxis, -dy * 0.005); // 垂直：绕相机右轴，可无限翻滚
+      _orbOff.applyQuaternion(_orbQ);
+      camera.up.applyQuaternion(_orbQ);
+    }
+    camera.up.normalize();
+    camDist = _orbOff.length();
+    camera.position.copy(CAM_TARGET).add(_orbOff);
+    camera.lookAt(CAM_TARGET);
+    camFree = true;
+    syncSpherical();
   }
   updateCamera();
 
@@ -165,13 +204,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   /* 1.2.8: 经典模式每帧更新 —— 环心（模型中点/世界中心）+ 六参数跟手映射
    * 跟手映射：X/Y 沿相机右/上方向位移（1px 屏幕 = worldPerPx 世界单位，与自由模式手感一致）；
    * 大小% 缩放环直径；俯仰/偏航/滚转转环面（欧拉序 XYZ，与 CSS rotateX/Y/Z 同构）；
-   * 平面内自转累计在 spinAcc，避免覆盖滚转角。 */
-  var _vRight = new THREE.Vector3(), _vUp = new THREE.Vector3();
+   * 平面内自转累计在 spinAcc，避免覆盖滚转角。
+   * 1.3.2: Z 沿相机视线深度位移（+Z = 朝观察者，与自由模式 translateZ 同号），zu = 环面躺平。 */
+  var _vRight = new THREE.Vector3(), _vUp = new THREE.Vector3(), _vNear = new THREE.Vector3();
   function updateRings3D(dt) {
     if (!ring3dGroup.visible) return;
     camera.updateMatrixWorld();
     _vRight.setFromMatrixColumn(camera.matrixWorld, 0); // 相机右 = 屏幕右
     _vUp.setFromMatrixColumn(camera.matrixWorld, 1);    // 相机上 = 屏幕上
+    _vNear.setFromMatrixColumn(camera.matrixWorld, 2);  // 相机后向 → +Z 即"朝观察者"
     if (state.ringAnchor === "model") {
       // 模型中点：跟随模型水平位移与呼吸浮动（modelRoot.position.y - modelBaseY = 呼吸增量）
       ring3dGroup.position.set(modelRoot.position.x,
@@ -187,10 +228,12 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       if (!m) return;
       m.position.set(0, 0, 0)
         .addScaledVector(_vRight, rg.x * worldPerPx)
-        .addScaledVector(_vUp, -rg.y * worldPerPx); // 屏幕 Y 向下，取负
+        .addScaledVector(_vUp, -rg.y * worldPerPx) // 屏幕 Y 向下，取负
+        .addScaledVector(_vNear, rg.z * worldPerPx); // 1.3.2: +Z 朝观察者（与自由模式 translateZ 同号）
       m.scale.setScalar(Math.max(0.05, rg.s / 100));
       m.userData.spinAcc = (m.userData.spinAcc || 0) + m.userData.spin * dt;
-      m.rotation.set(rg.p * DEG, rg.w * DEG, rg.r * DEG + m.userData.spinAcc);
+      // 1.3.2: zu（Z 轴朝上）在俯仰角上叠加 -90°，环面由竖直改为水平躺平
+      m.rotation.set((rg.p + (rg.zu ? -90 : 0)) * DEG, rg.w * DEG, rg.r * DEG + m.userData.spinAcc);
     });
   }
   var srcMeshes = [];
@@ -214,16 +257,16 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     delay: 100,                          // GIF 每帧延时 ms
     ringMode: "free",                    // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）
     ringAnchor: "model",                 // 1.2.8: 经典模式环心 model=模型中点（跟随模型）| world=世界中心
-    rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5）
-      { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0, style: "seg" },
-      { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0, style: "dial" },
-      { x: 0, y: 0, s: 86,  p: 18, r: -12, w: 0, style: "dash" }
+    rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5；z/zu 见 1.3.2）
+      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "seg" },
+      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "dial" },
+      { x: 0, y: 0, z: 0, s: 86,  p: 18, r: -12, w: 0, zu: false, style: "dash" }
     ]
   };
   var RING_DEFAULTS = [
-    { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0 },
-    { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0 },
-    { x: 0, y: 0, s: 86,  p: 18, r: -12, w: 0 }
+    { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false },
+    { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false },
+    { x: 0, y: 0, z: 0, s: 86,  p: 18, r: -12, w: 0, zu: false }
   ];
 
   /* ---------- 全彩：保留原始对象树 / 释放 ---------- */
@@ -523,8 +566,11 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       var size = base * rg.s / 100;
       wrap.style.width = size + "px";
       wrap.style.height = size + "px";
+      // 1.3.2: 补深度位移 translateZ（#hud 有 perspective:1400px，天然带透视）
+      //         zu（Z 轴朝上）= 俯仰角叠加 -90°，环面由竖直转为水平躺平
       wrap.style.transform = "translate(calc(-50% + " + rg.x + "px), calc(-50% + " + rg.y + "px))" +
-        " rotateX(" + rg.p + "deg) rotateY(" + rg.w + "deg) rotateZ(" + rg.r + "deg)";
+        " translateZ(" + rg.z + "px)" +
+        " rotateX(" + (rg.p + (rg.zu ? -90 : 0)) + "deg) rotateY(" + rg.w + "deg) rotateZ(" + rg.r + "deg)";
     });
   }
 
@@ -1094,13 +1140,22 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       loadModel(state.lastLoad.url, state.lastLoad.name);
     }
   };
-  // 三环控制（1.2；1.2.5 加偏航角 w 与样式切换）
+  // 三环控制（1.2；1.2.5 加偏航角 w 与样式切换；1.3.2 加深度位移 z）
   Array.prototype.forEach.call(document.querySelectorAll(".ringCtl"), function (el) {
     el.oninput = function () {
       var n = +this.dataset.ring, k = this.dataset.k;
       state.rings[n - 1][k] = +this.value;
-      var idMap = { x: "valR" + n + "X", y: "valR" + n + "Y", s: "valR" + n + "S", p: "valR" + n + "P", r: "valR" + n + "R", w: "valR" + n + "W" };
-      $(idMap[k]).textContent = (k === "p" || k === "r" || k === "w") ? this.value + "°" : this.value;
+      var idMap = { x: "valR" + n + "X", y: "valR" + n + "Y", z: "valR" + n + "Z", s: "valR" + n + "S", p: "valR" + n + "P", r: "valR" + n + "R", w: "valR" + n + "W" };
+      var lbl = $(idMap[k]);
+      if (lbl) lbl.textContent = (k === "p" || k === "r" || k === "w") ? this.value + "°" : this.value;
+      applyRings();
+    };
+  });
+  // Z 轴朝上（1.3.2）：单环独立，环面由竖直转为水平躺平（自由/经典两模式均生效）
+  Array.prototype.forEach.call(document.querySelectorAll(".ringZU"), function (cb) {
+    cb.onchange = function () {
+      var n = +this.dataset.ring;
+      state.rings[n - 1].zu = !!this.checked;
       applyRings();
     };
   });
@@ -1138,13 +1193,16 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       e.preventDefault(); e.stopPropagation(); // 阻止 details 折叠
       var n = +this.dataset.ring;
       var def = RING_DEFAULTS[n - 1];
-      ["x", "y", "s", "p", "r", "w"].forEach(function (k) {
+      ["x", "y", "z", "s", "p", "r", "w"].forEach(function (k) {
         state.rings[n - 1][k] = def[k];
         var inp = document.querySelector('.ringCtl[data-ring="' + n + '"][data-k="' + k + '"]');
         if (inp) inp.value = def[k];
-        var idMap = { x: "valR" + n + "X", y: "valR" + n + "Y", s: "valR" + n + "S", p: "valR" + n + "P", r: "valR" + n + "R", w: "valR" + n + "W" };
+        var idMap = { x: "valR" + n + "X", y: "valR" + n + "Y", z: "valR" + n + "Z", s: "valR" + n + "S", p: "valR" + n + "P", r: "valR" + n + "R", w: "valR" + n + "W" };
         $(idMap[k]).textContent = (k === "p" || k === "r" || k === "w") ? def[k] + "°" : def[k];
       });
+      state.rings[n - 1].zu = def.zu; // 1.3.2: Z 轴朝上一并复位
+      var zcb = document.querySelector('.ringZU[data-ring="' + n + '"]');
+      if (zcb) zcb.checked = !!def.zu;
       applyRings();
       statusEl.textContent = "RING " + n + " RESET";
     };
@@ -1420,7 +1478,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       pulse: state.pulseOn, bloom: bloomBase, atmo: state.atmo,
       grid: gridGroup.visible, hud: $("inpHud").checked,
       anim: !!(mixer && animClips.length),
-      rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, s: r.s, p: r.p, r: r.r, w: r.w }; }),
+      rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, z: r.z, s: r.s, p: r.p, r: r.r, w: r.w, zu: r.zu }; }),
       ringMode: state.ringMode,
       ringAnchor: state.ringAnchor
     };
@@ -1477,29 +1535,44 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     mousePar.x = Math.max(-1, Math.min(1, (e.clientX - (r.left + r.width / 2)) / (r.width / 2)));
     mousePar.y = Math.max(-1, Math.min(1, (e.clientY - (r.top + r.height / 2)) / (r.height / 2)));
   });
-  /* 相机交互（1.2.6）：滚轮缩放 / 左键拖动视角 / 右键复位 */
+  /* 相机交互（1.2.6）：滚轮缩放 / 左键拖动视角 / 右键复位
+   * 1.3.2: ⌘ 或 ⌥ + 拖拽 = 自由视角（360°），修饰键直接从鼠标事件读取 */
   stageEl.addEventListener("wheel", function (e) {
     e.preventDefault();
-    camDist *= (e.deltaY > 0 ? 1.08 : 1 / 1.08);
-    camDist = Math.max(1.2, Math.min(14, camDist));
-    updateCamera();
+    var f = (e.deltaY > 0 ? 1.08 : 1 / 1.08);
+    if (camFree) {
+      // 自由翻滚姿态：沿当前视线推拉，保持姿态，不跳回球坐标
+      _orbOff.copy(camera.position).sub(CAM_TARGET).normalize();
+      camDist = Math.max(1.2, Math.min(14, camDist * f));
+      camera.position.copy(CAM_TARGET).addScaledVector(_orbOff, camDist);
+      syncSpherical();
+      camera.lookAt(CAM_TARGET);
+    } else {
+      camDist = Math.max(1.2, Math.min(14, camDist * f));
+      updateCamera();
+    }
   }, { passive: false });
   var camDrag = null;
   stageEl.addEventListener("mousedown", function (e) {
-    if (e.button === 0) camDrag = { x: e.clientX, y: e.clientY };
+    if (e.button !== 0) return;
+    camDrag = { x: e.clientX, y: e.clientY };
+    if (e.metaKey || e.altKey) statusEl.textContent = "FREE ORBIT 360° — 不受地面限制（松开 ⌘/⌥ 回到受限视角）";
   });
   window.addEventListener("mousemove", function (e) {
     if (!camDrag) return;
     var dx = e.clientX - camDrag.x, dy = e.clientY - camDrag.y;
     camDrag = { x: e.clientX, y: e.clientY };
+    if (e.metaKey || e.altKey) { orbitFree(dx, dy); return; } // 1.3.2: 自由视角，不夹取
     camYaw -= dx * 0.005;
     camPitch = Math.max(-1.2, Math.min(1.45, camPitch + dy * 0.005));
+    camFree = false; camera.up.set(0, 1, 0); // 受限视角的 up 恒为世界 up
     updateCamera();
   });
   window.addEventListener("mouseup", function () { camDrag = null; });
   stageEl.addEventListener("contextmenu", function (e) {
     e.preventDefault();
     camYaw = CAM_HOME.yaw; camPitch = CAM_HOME.pitch; camDist = CAM_HOME.dist;
+    camFree = false; camera.up.set(0, 1, 0); // 1.3.2: 自由翻滚后一并复位 up，否则画面保持倒置
     updateCamera();
     statusEl.textContent = "CAMERA RESET";
   });
@@ -1539,5 +1612,5 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     composer.render();
   })(last);
 
-  statusEl.textContent = "READY — 滚轮缩放 · 左键拖动视角 · 右键复位 — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP（PMX 可再拖 .vmd 动作）";
+  statusEl.textContent = "READY — 滚轮缩放 · 左键拖动视角 · ⌘/⌥+拖动 360°自由视角 · 右键复位 — 拖入 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP（PMX 可再拖 .vmd 动作）";
 })();

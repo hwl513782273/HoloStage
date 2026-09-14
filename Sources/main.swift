@@ -116,7 +116,7 @@ final class BrandHeader: NSView {
             .applicationName: "HoloStage",
             .applicationVersion: version,
             .version: version,
-            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
+            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n⌘ / ⌥ + 拖拽 = 360° 自由视角（不受地面限制）；全息环支持三轴位移与「Z 轴朝上」。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
         ])
     }
 }
@@ -178,6 +178,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             webView.loadFileURL(page, allowingReadAccessTo: URL(fileURLWithPath: "/"))
         }
 
+        buildMainMenu() // 1.3.2: 必须先建菜单栏，否则 ⌘Q / ⌘W / ⌘C 等标准快捷键没有绑定目标
+        // 1.3.2: MENU_SELFTEST=1 打印菜单栏结构后退出（交付验证能力，与 OPEN_ABOUT 同性质、零副作用）
+        if ProcessInfo.processInfo.environment["MENU_SELFTEST"] == "1" {
+            print("[MENU-SELFTEST]\n" + menuDescription())
+            // 1.3.2: MENU_SEND_CMD_Q=1 时合成一次 ⌘Q 键事件交给菜单系统路由 ——
+            // 这与 AppKit 自身的按键分发路径完全一致（NSApplication.sendEvent 先问 mainMenu）。
+            // 若绑定真的生效，NSApp 会立刻 terminate，下面那行标记就不会出现；
+            // 因此用「标记是否打印」判定 ⌘Q 是否活绑，无需辅助功能授权。
+            if ProcessInfo.processInfo.environment["MENU_SEND_CMD_Q"] == "1" {
+                print("[CMD-Q] 即将派发合成 ⌘Q —— 若绑定生效，本进程应立即退出、下面这行不会出现")
+                fflush(stdout)
+                if let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                             timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: 0, context: nil,
+                                             characters: "q", charactersIgnoringModifiers: "q",
+                                             isARepeat: false, keyCode: 12) {
+                    let handled = NSApp.mainMenu?.performKeyEquivalent(with: ev) ?? false
+                    print("[CMD-Q] 存活未退出，handled=\(handled) —— ⌘Q 绑定未生效")
+                } else {
+                    print("[CMD-Q] 合成键事件失败")
+                }
+            }
+            exit(0)
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
@@ -189,12 +213,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
 
+    /* 1.3.2: 标准菜单栏。
+     * 此前从未构建 mainMenu，AppKit 就找不到 ⌘Q 的绑定目标 —— 按键被静默丢弃，
+     * 于是应用无法用 ⌘Q 退出（不是按键被拦截，而是压根没有这条绑定）。
+     * 菜单项 target 一律留 nil，沿响应链交给 NSApp / 当前窗口处理。 */
+    private func buildMainMenu() {
+        let name = "HoloStage"
+        let mainMenu = NSMenu()
+
+        // 应用菜单
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "关于 \(name)",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "隐藏 \(name)",
+                        action: #selector(NSApplication.hide(_:)),
+                        keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "隐藏其他",
+                                         action: #selector(NSApplication.hideOtherApplications(_:)),
+                                         keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "显示全部",
+                        action: #selector(NSApplication.unhideAllApplications(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "退出 \(name)",
+                        action: #selector(NSApplication.terminate(_:)),
+                        keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        // 编辑菜单（网页内的文本输入、导出文件名输入框都依赖它）
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "剪切", action: Selector(("cut:")), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "复制", action: Selector(("copy:")), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: Selector(("paste:")), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: Selector(("selectAll:")), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        // 窗口菜单
+        let winItem = NSMenuItem()
+        mainMenu.addItem(winItem)
+        let winMenu = NSMenu(title: "窗口")
+        winMenu.addItem(withTitle: "最小化",
+                        action: #selector(NSWindow.performMiniaturize(_:)),
+                        keyEquivalent: "m")
+        winMenu.addItem(withTitle: "缩放",
+                        action: #selector(NSWindow.performZoom(_:)),
+                        keyEquivalent: "")
+        winMenu.addItem(.separator())
+        winMenu.addItem(withTitle: "关闭窗口",
+                        action: #selector(NSWindow.performClose(_:)),
+                        keyEquivalent: "w")
+        winItem.submenu = winMenu
+        NSApp.windowsMenu = winMenu
+
+        NSApp.mainMenu = mainMenu
+    }
+
+    /* 1.3.2: 把 mainMenu 结构落成可读文本，供 MENU_SELFTEST 自检（命令行可验证 ⌘Q 是否已绑定） */
+    private func menuDescription() -> String {
+        guard let main = NSApp.mainMenu else { return "(no mainMenu)" }
+        return main.items.map { item -> String in
+            let title = item.submenu?.title ?? "(item)"
+            let subs = (item.submenu?.items ?? []).map { sub -> String in
+                let ke = sub.keyEquivalent
+                if ke.isEmpty { return sub.title }
+                let m = sub.keyEquivalentModifierMask
+                var mods = ""
+                if m.contains(.control) { mods += "^" }
+                if m.contains(.option) { mods += "⌥" }
+                if m.contains(.shift) { mods += "⇧" }
+                if m.contains(.command) { mods += "⌘" }
+                return sub.title + "[" + mods + ke.uppercased() + "]"
+            }.joined(separator: ", ")
+            return title + " => " + subs
+        }.joined(separator: "\n")
+    }
+
     private func showAboutPanel() {
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "HoloStage",
             .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
             .version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
-            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
+            .credits: NSAttributedString(string: "把 STL / OBJ / glTF / GLB / PLY / FBX / PMX / USDZ / ZIP\n变成复古未来风线框全息加载动画。\nPMX/PMD 可拖入 .vmd 动作，并由 ammo.js 驱动头发/裙摆物理。\n⌘ / ⌥ + 拖拽 = 360° 自由视角（不受地面限制）；全息环支持三轴位移与「Z 轴朝上」。\n渲染引擎 three.js r170 + tinyusdz + ammo.js（本地内置，离线可用）")
         ])
     }
 
