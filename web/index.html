@@ -276,7 +276,12 @@
       <option value="free" selected>自由变换（1.2+）</option>
       <option value="classic">经典 1.0（绕中点平转）</option>
     </select>
-    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">经典模式：环心固定在画面中心（3D 场景内），随视角透视环绕；忽略各环独立变换</div>
+    <div class="row" style="margin-top:6px;"><label>环心（经典模式）</label></div>
+    <select id="selRingAnchor">
+      <option value="model" selected>模型中点（跟随模型）</option>
+      <option value="world">世界中心（1.2.7 行为）</option>
+    </select>
+    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">经典模式：环在 3D 场景内随视角透视；环心可选跟随模型中点或世界中心；各环六参数全部生效（X/Y 跟手位移、大小缩放、俯仰/偏航/滚转）</div>
 
     <h2>全息环 ①</h2>
     <details class="ring" open>

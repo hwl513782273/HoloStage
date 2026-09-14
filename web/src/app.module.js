@@ -156,8 +156,40 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     applyRings();
   }
 
+  /* 1.2.8: 经典模式每帧更新 —— 环心（模型中点/世界中心）+ 六参数跟手映射
+   * 跟手映射：X/Y 沿相机右/上方向位移（1px 屏幕 = worldPerPx 世界单位，与自由模式手感一致）；
+   * 大小% 缩放环直径；俯仰/偏航/滚转转环面（欧拉序 XYZ，与 CSS rotateX/Y/Z 同构）；
+   * 平面内自转累计在 spinAcc，避免覆盖滚转角。 */
+  var _vRight = new THREE.Vector3(), _vUp = new THREE.Vector3();
+  function updateRings3D(dt) {
+    if (!ring3dGroup.visible) return;
+    camera.updateMatrixWorld();
+    _vRight.setFromMatrixColumn(camera.matrixWorld, 0); // 相机右 = 屏幕右
+    _vUp.setFromMatrixColumn(camera.matrixWorld, 1);    // 相机上 = 屏幕上
+    if (state.ringAnchor === "model") {
+      // 模型中点：跟随模型水平位移与呼吸浮动（modelRoot.position.y - modelBaseY = 呼吸增量）
+      ring3dGroup.position.set(modelRoot.position.x,
+        modelMidY + (modelRoot.position.y - modelBaseY),
+        modelRoot.position.z);
+    } else {
+      ring3dGroup.position.copy(CAM_TARGET); // 世界中心（1.2.7 行为）
+    }
+    var worldPerPx = 2 * camDist * Math.tan(camera.fov * Math.PI / 360) / stageH;
+    var DEG = Math.PI / 180;
+    state.rings.forEach(function (rg, i) {
+      var m = ring3dMeshes[i];
+      if (!m) return;
+      m.position.set(0, 0, 0)
+        .addScaledVector(_vRight, rg.x * worldPerPx)
+        .addScaledVector(_vUp, -rg.y * worldPerPx); // 屏幕 Y 向下，取负
+      m.scale.setScalar(Math.max(0.05, rg.s / 100));
+      m.userData.spinAcc = (m.userData.spinAcc || 0) + m.userData.spin * dt;
+      m.rotation.set(rg.p * DEG, rg.w * DEG, rg.r * DEG + m.userData.spinAcc);
+    });
+  }
   var srcMeshes = [];
   var modelBaseY = 0; // 1.2.4: 悬浮呼吸的基准高度（normalizeModel 后记录）
+  var modelMidY = 0.85; // 1.2.8: 模型包围盒竖直中点（经典模式"模型中点"环心）
   var state = {
     speed: 0.5, mode: "wire", angle: 32, scale: 1.0, zup: false,
     render: "wire",                     // 1.2.2: wire | full
@@ -169,6 +201,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
     ringMode: "free",                    // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）
+    ringAnchor: "model",                 // 1.2.8: 经典模式环心 model=模型中点（跟随模型）| world=世界中心
     rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5）
       { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0, style: "seg" },
       { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0, style: "dial" },
@@ -275,6 +308,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     modelRoot.position.x += state.pos.x;
     modelRoot.position.y += state.pos.y;
     modelRoot.position.z += state.pos.z;
+    modelRoot.updateMatrixWorld(true); // 1.2.8: 记录模型包围盒竖直中点（环心用）
+    var wb = new THREE.Box3().setFromObject(modelRoot);
+    if (!wb.isEmpty()) modelMidY = (wb.min.y + wb.max.y) / 2;
     modelBaseY = modelRoot.position.y; // 1.2.4
   }
 
@@ -829,6 +865,12 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     rebuildRing3D();
     statusEl.textContent = (this.value === "classic") ? "RING MODE: CLASSIC 1.0 (3D)" : "RING MODE: FREE";
   };
+  // 环心（1.2.8）：模型中点 / 世界中心（仅经典模式生效）
+  $("selRingAnchor").value = state.ringAnchor;
+  $("selRingAnchor").onchange = function () {
+    state.ringAnchor = this.value;
+    statusEl.textContent = (this.value === "model") ? "RING ANCHOR: MODEL MID" : "RING ANCHOR: WORLD";
+  };
   // 环组重置（1.2.5）：位置/大小/俯仰/偏航/滚转回默认（保留样式）
   Array.prototype.forEach.call(document.querySelectorAll(".rstRing"), function (btn) {
     btn.onclick = function (e) {
@@ -1049,7 +1091,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       grid: gridGroup.visible, hud: $("inpHud").checked,
       anim: !!(mixer && animClips.length),
       rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, s: r.s, p: r.p, r: r.r, w: r.w }; }),
-      ringMode: state.ringMode
+      ringMode: state.ringMode,
+      ringAnchor: state.ringAnchor
     };
     var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_holo.html";
     new GLTFExporter().parse(exportRoot, function (glb) {
@@ -1141,8 +1184,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       modelRoot.rotation.z = roll;
       modelRoot.position.y = modelBaseY +
         (state.bobOn ? Math.sin(tAcc * 1.7) * 0.055 * state.bobAmp : 0);
-      // 3D 全息环平面内自转（1.2.7 经典模式）
-      ring3dMeshes.forEach(function (m) { m.rotation.z += m.userData.spin * dt; });
+      // 3D 全息环（1.2.8 经典模式）：环心跟随 + 六参数跟手映射 + 平面内自转
+      updateRings3D(dt);
     }
     if (state.pulseOn) {
       var atmo = (state.render === "full") ? state.atmo : true;

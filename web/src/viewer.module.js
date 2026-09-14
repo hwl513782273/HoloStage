@@ -153,6 +153,33 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
     applyRings();
   }
 
+  /* 1.2.8: 经典模式每帧更新 —— 与 App 端同构（环心模型中点/世界中心 + 六参数跟手映射） */
+  var _vRight = new THREE.Vector3(), _vUp = new THREE.Vector3();
+  var modelMidY = CAM_TARGET.y; // 模型包围盒竖直中点（GLTF 加载后实测）
+  function updateRings3D(dt) {
+    if (!ring3dGroup.visible) return;
+    camera.updateMatrixWorld();
+    _vRight.setFromMatrixColumn(camera.matrixWorld, 0);
+    _vUp.setFromMatrixColumn(camera.matrixWorld, 1);
+    if (CFG.ringAnchor !== "world") {
+      ring3dGroup.position.set(0, modelMidY + (root.position.y || 0), 0); // 跟随模型（含呼吸）
+    } else {
+      ring3dGroup.position.copy(CAM_TARGET); // 世界中心（1.2.7 行为）
+    }
+    var worldPerPx = 2 * camDist * Math.tan(camera.fov * Math.PI / 360) / window.innerHeight;
+    var DEG = Math.PI / 180;
+    rings.forEach(function (rg, i) {
+      var m = ring3dMeshes[i];
+      if (!m) return;
+      m.position.set(0, 0, 0)
+        .addScaledVector(_vRight, rg.x * worldPerPx)
+        .addScaledVector(_vUp, -rg.y * worldPerPx); // 屏幕 Y 向下，取负
+      m.scale.setScalar(Math.max(0.05, rg.s / 100));
+      m.userData.spinAcc = (m.userData.spinAcc || 0) + m.userData.spin * dt;
+      m.rotation.set(rg.p * DEG, rg.w * DEG, rg.r * DEG + m.userData.spinAcc);
+    });
+  }
+
   stageEl.addEventListener("wheel", function (e) {
     e.preventDefault();
     camDist *= (e.deltaY > 0 ? 1.08 : 1 / 1.08);
@@ -218,6 +245,9 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
   if (GLB_B64) {
     new GLTFLoader().parse(b64ToBuf(GLB_B64), "", function (gltf) {
       root.add(gltf.scene);
+      gltf.scene.updateMatrixWorld(true); // 1.2.8: 实测模型包围盒竖直中点（环心用）
+      var bb = new THREE.Box3().setFromObject(gltf.scene);
+      if (!bb.isEmpty()) modelMidY = (bb.min.y + bb.max.y) / 2;
       if (CFG.mode === "wire") {
         gltf.scene.updateMatrixWorld(true);
         var mat = new THREE.LineBasicMaterial({
@@ -276,7 +306,7 @@ import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
     root.rotation.y = spin + (CFG.parallax ? mousePar.x * 0.22 : 0);
     root.rotation.z = CFG.parallax ? mousePar.y * 0.1 : 0;
     root.position.y = CFG.bobOn ? Math.sin(tAcc * 1.7) * 0.055 * (CFG.bobAmp || 1) : 0;
-    ring3dMeshes.forEach(function (m) { m.rotation.z += m.userData.spin * dt; }); // 1.2.7
+    updateRings3D(dt); // 1.2.8: 环心跟随 + 六参数跟手映射 + 平面内自转
     if (CFG.pulse) bloom.strength = bloomBase * (1 + 0.22 * Math.sin(tAcc * 2.3));
     composer.render();
   })(last);
