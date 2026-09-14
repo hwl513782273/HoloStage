@@ -224,6 +224,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if let frames = body["frames"] as? [String], let name = body["name"] as? String {
                 saveSequence(frames: frames, baseName: name)
             }
+        case "saveHtml":
+            if let data = base64Data(body["data"]), let name = body["name"] as? String {
+                saveData(data, name: name, ext: "html")
+            }
         default: break
         }
     }

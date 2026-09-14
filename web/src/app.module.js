@@ -5,12 +5,15 @@
  * 1.2.3: 缩放上限 10×；重置变换按钮；界面部件逐个 #RRGGBB 配色（auto=跟随配色下拉）
  * 1.2.4: 面板可读性提升；舞台底部比例/分辨率快捷切换条；悬浮呼吸/鼠标视差/辉光脉冲；
  *        glTF/GLB/FBX 骨骼动画播放（播放/暂停/进度/速度/循环/多片段切换）
+ * 1.2.5: 全息环样式库（分段弧/刻度盘/虚线环/魔法阵/数据弧，每环独立切换）+ 偏航角；
+ *        环组/场景组重置按钮；界面配色折叠；导出单文件网页 HTML（完整还原画面）
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
@@ -20,6 +23,7 @@ import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { MMDLoader } from "three/examples/jsm/loaders/MMDLoader.js";
 import { TinyUSDZLoader } from "./vendor/TinyUSDZLoader.js";
 import { TinyUSDZLoaderUtils } from "./vendor/TinyUSDZLoaderUtils.js";
+import { buildRingSVG, RING_STYLES } from "./rings.js";
 import initTinyUSDZNative from "./tinyusdz-glue.js";
 
 (function () {
@@ -120,12 +124,17 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     gridOn: true, hudOn: true, fileName: "", modelName: "HOLOSTAGE",
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
-    rings: [                             // 三环独立变换
-      { x: 0, y: 0, s: 100, p: 0, r: 0 },
-      { x: 0, y: 0, s: 100, p: 0, r: 0 },
-      { x: 0, y: 0, s: 86,  p: 18, r: -12 }
+    rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5）
+      { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0, style: "seg" },
+      { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0, style: "dial" },
+      { x: 0, y: 0, s: 86,  p: 18, r: -12, w: 0, style: "dash" }
     ]
   };
+  var RING_DEFAULTS = [
+    { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0 },
+    { x: 0, y: 0, s: 100, p: 0, r: 0, w: 0 },
+    { x: 0, y: 0, s: 86,  p: 18, r: -12, w: 0 }
+  ];
 
   /* ---------- 全彩：保留原始对象树 / 释放 ---------- */
   function disposeObject(root) {
@@ -337,61 +346,13 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function showError(msg) { errEl.textContent = msg; errEl.style.display = "block"; }
   function hideError() { errEl.style.display = "none"; }
 
-  /* ---------- HUD：三环 + 底部进度条 ---------- */
+  /* ---------- HUD：三环（样式库 1.2.5）+ 底部进度条 ---------- */
   var ringWraps = [$("ringWrap1"), $("ringWrap2"), $("ringWrap3")];
   (function buildHUD() {
-    var NS = "http://www.w3.org/2000/svg";
-    function mk(tag, attrs) {
-      var el = document.createElementNS(NS, tag);
-      for (var k in attrs) el.setAttribute(k, attrs[k]);
-      return el;
-    }
-    // ① 分段弧环
-    var svgA = mk("svg", { viewBox: "0 0 600 600", "class": "ringSpin" });
-    var cx = 300, R1 = 272, R2 = 232;
-    var segs = 22;
-    for (var i = 0; i < segs; i++) {
-      var a0 = (i / segs) * Math.PI * 2, a1 = a0 + (Math.PI * 2 / segs) * 0.62;
-      var large = (a1 - a0) > Math.PI ? 1 : 0;
-      var p = mk("path", {
-        d: "M " + (cx + R1 * Math.cos(a0)) + " " + (cx + R1 * Math.sin(a0)) +
-           " A " + R1 + " " + R1 + " 0 " + large + " 1 " + (cx + R1 * Math.cos(a1)) + " " + (cx + R1 * Math.sin(a1)) +
-           " L " + (cx + R2 * Math.cos(a1)) + " " + (cx + R2 * Math.sin(a1)) +
-           " A " + R2 + " " + R2 + " 0 " + large + " 0 " + (cx + R2 * Math.cos(a0)) + " " + (cx + R2 * Math.sin(a0)) + " Z",
-        fill: "currentColor", opacity: 0.16
-      });
-      svgA.appendChild(p);
-    }
-    ringWraps[0].appendChild(svgA);
-    // ② 刻度环
-    var svgB = mk("svg", { viewBox: "0 0 600 600", "class": "ringSpinRev" });
-    svgB.appendChild(mk("circle", { cx: cx, cy: cx, r: 210, fill: "none",
-      stroke: "currentColor", "stroke-width": 1.5, "stroke-opacity": 0.35 }));
-    for (var t = 0; t < 60; t++) {
-      var ta = (t / 60) * Math.PI * 2, r0 = 196, r1 = t % 5 === 0 ? 182 : 189;
-      svgB.appendChild(mk("line", {
-        x1: cx + r0 * Math.cos(ta), y1: cx + r0 * Math.sin(ta),
-        x2: cx + r1 * Math.cos(ta), y2: cx + r1 * Math.sin(ta),
-        stroke: "currentColor", "stroke-width": t % 5 === 0 ? 2.5 : 1, "stroke-opacity": 0.4
-      }));
-    }
-    svgB.appendChild(mk("circle", { cx: cx, cy: cx, r: 3, fill: "currentColor", opacity: 0.7 }));
-    ringWraps[1].appendChild(svgB);
-    // ③ 虚线环（1.2 新增）
-    var svgC = mk("svg", { viewBox: "0 0 600 600", "class": "ringSpinSlow" });
-    svgC.appendChild(mk("circle", { cx: cx, cy: cx, r: 250, fill: "none",
-      stroke: "currentColor", "stroke-width": 2, "stroke-opacity": 0.5, "stroke-dasharray": "18 12" }));
-    svgC.appendChild(mk("circle", { cx: cx, cy: cx, r: 262, fill: "none",
-      stroke: "currentColor", "stroke-width": 1, "stroke-opacity": 0.22, "stroke-dasharray": "4 8" }));
-    for (var q = 0; q < 4; q++) {
-      var qa = (q / 4) * Math.PI * 2 + Math.PI / 4;
-      svgC.appendChild(mk("rect", {
-        x: cx + 250 * Math.cos(qa) - 5, y: cx + 250 * Math.sin(qa) - 5,
-        width: 10, height: 10, fill: "currentColor", opacity: 0.55,
-        transform: "rotate(" + (qa * 180 / Math.PI + 45) + " " + (cx + 250 * Math.cos(qa)) + " " + (cx + 250 * Math.sin(qa)) + ")"
-      }));
-    }
-    ringWraps[2].appendChild(svgC);
+    // 1.2.5: 环内容由 rings.js 样式库生成（每环可独立切换样式）
+    ringWraps.forEach(function (wrap, i) {
+      wrap.innerHTML = buildRingSVG(state.rings[i].style, i + 1);
+    });
     // 底部进度条
     for (var b = 0; b < 22; b++) {
       var sp = document.createElement("span");
@@ -409,7 +370,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       wrap.style.width = size + "px";
       wrap.style.height = size + "px";
       wrap.style.transform = "translate(calc(-50% + " + rg.x + "px), calc(-50% + " + rg.y + "px))" +
-        " rotateX(" + rg.p + "deg) rotateZ(" + rg.r + "deg)";
+        " rotateX(" + rg.p + "deg) rotateY(" + rg.w + "deg) rotateZ(" + rg.r + "deg)";
     });
   }
 
@@ -783,16 +744,58 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   // 渲染方式 / 全彩氛围（1.2.2）
   $("selRender").onchange = function () { state.render = this.value; applyRender(); };
   $("inpAtmo").onchange = function () { state.atmo = this.checked; refreshAtmo(); };
-  // 三环控制（1.2）
+  // 三环控制（1.2；1.2.5 加偏航角 w 与样式切换）
   Array.prototype.forEach.call(document.querySelectorAll(".ringCtl"), function (el) {
     el.oninput = function () {
       var n = +this.dataset.ring, k = this.dataset.k;
       state.rings[n - 1][k] = +this.value;
-      var idMap = { x: "valR" + n + "X", y: "valR" + n + "Y", s: "valR" + n + "S", p: "valR" + n + "P", r: "valR" + n + "R" };
-      $(idMap[k]).textContent = (k === "p" || k === "r") ? this.value + "°" : this.value;
+      var idMap = { x: "valR" + n + "X", y: "valR" + n + "Y", s: "valR" + n + "S", p: "valR" + n + "P", r: "valR" + n + "R", w: "valR" + n + "W" };
+      $(idMap[k]).textContent = (k === "p" || k === "r" || k === "w") ? this.value + "°" : this.value;
       applyRings();
     };
   });
+  // 环样式下拉（1.2.5）
+  Array.prototype.forEach.call(document.querySelectorAll(".ringStyle"), function (sel) {
+    RING_STYLES().forEach(function (s) {
+      var op = document.createElement("option");
+      op.value = s[0]; op.textContent = s[1];
+      sel.appendChild(op);
+    });
+    sel.value = state.rings[+sel.dataset.ring - 1].style;
+    sel.onchange = function () {
+      var n = +this.dataset.ring;
+      state.rings[n - 1].style = this.value;
+      ringWraps[n - 1].innerHTML = buildRingSVG(this.value, n);
+    };
+  });
+  // 环组重置（1.2.5）：位置/大小/俯仰/偏航/滚转回默认（保留样式）
+  Array.prototype.forEach.call(document.querySelectorAll(".rstRing"), function (btn) {
+    btn.onclick = function (e) {
+      e.preventDefault(); e.stopPropagation(); // 阻止 details 折叠
+      var n = +this.dataset.ring;
+      var def = RING_DEFAULTS[n - 1];
+      ["x", "y", "s", "p", "r", "w"].forEach(function (k) {
+        state.rings[n - 1][k] = def[k];
+        var inp = document.querySelector('.ringCtl[data-ring="' + n + '"][data-k="' + k + '"]');
+        if (inp) inp.value = def[k];
+        var idMap = { x: "valR" + n + "X", y: "valR" + n + "Y", s: "valR" + n + "S", p: "valR" + n + "P", r: "valR" + n + "R", w: "valR" + n + "W" };
+        $(idMap[k]).textContent = (k === "p" || k === "r" || k === "w") ? def[k] + "°" : def[k];
+      });
+      applyRings();
+      statusEl.textContent = "RING " + n + " RESET";
+    };
+  });
+  // 场景组重置（1.2.5）
+  $("btnSceneReset").onclick = function () {
+    state.speed = 0.5; $("inpSpeed").value = 5; $("valSpeed").textContent = "0.5";
+    state.bobOn = true; $("inpBob").checked = true;
+    state.bobAmp = 1.0; $("inpBobAmp").value = 100; $("valBobAmp").textContent = "1.0";
+    state.parallaxOn = false; $("inpParallax").checked = false; modelRoot.rotation.z = 0;
+    state.pulseOn = false; $("inpPulse").checked = false; refreshAtmo();
+    gridGroup.visible = true; $("inpGrid").checked = true;
+    $("hud").style.display = ""; $("inpHud").checked = true;
+    statusEl.textContent = "SCENE RESET";
+  };
   // 画面比例 / 导出分辨率（1.2）
   $("selRatio").onchange = function () {
     $("ratioCustom").style.display = this.value === "custom" ? "flex" : "none";
@@ -911,6 +914,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function finishExport(msg) {
     exporting = false;
     var b = $("btnGif"); b.disabled = false; b.textContent = "导出 GIF 动画";
+    var h = $("btnHtml"); h.disabled = false; h.textContent = "导出网页 HTML（单文件）";
     statusEl.textContent = msg;
   }
 
@@ -947,6 +951,67 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       else downloadData(d, name);
       statusEl.textContent = "PNG 已导出: " + name + " (" + es[0] + "×" + es[1] + ")";
     });
+  };
+
+  /* ---------- 导出单文件网页 HTML（1.2.5 完整版） ---------- */
+  function b64FromBytes(bytes) {
+    var bin = "";
+    var chunk = 0x8000;
+    for (var i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  $("btnHtml").onclick = function () {
+    var btn = this;
+    if (exporting || !srcMeshes.length) return;
+    exporting = true; btn.disabled = true; btn.textContent = "网页生成中...";
+    statusEl.textContent = "EXPORTING HTML ...";
+    var src = fullGroup.children[0];
+    if (!src) { finishExport("导出失败：无模型"); return; }
+    // 导出根：原对象（保留蒙皮/动画），临时摘出并烘焙 modelRoot 变换（不含自转，查看器自转）
+    var exportRoot = new THREE.Group();
+    exportRoot.add(src); // 自动从 fullGroup 摘出，稍后放回
+    exportRoot.position.set(modelRoot.position.x, modelBaseY, modelRoot.position.z);
+    exportRoot.scale.copy(modelRoot.scale);
+    exportRoot.rotation.set(modelRoot.rotation.x, 0, modelRoot.rotation.z);
+    var cfg = {
+      v: 1, title: titleEl.textContent || "HOLOSTAGE", mode: state.render,
+      preset: { css: PRESETS[currentPreset].css, main: PRESETS[currentPreset].main, g1: PRESETS[currentPreset].g1 },
+      ui: uiColors,
+      speed: state.speed, bobOn: state.bobOn, bobAmp: state.bobAmp, parallax: state.parallaxOn,
+      pulse: state.pulseOn, bloom: bloomBase, atmo: state.atmo,
+      grid: gridGroup.visible, hud: $("inpHud").checked,
+      anim: !!(mixer && animClips.length),
+      rings: state.rings.map(function (r) { return { style: r.style, x: r.x, y: r.y, s: r.s, p: r.p, r: r.r, w: r.w }; })
+    };
+    var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_holo.html";
+    new GLTFExporter().parse(exportRoot, function (glb) {
+      fullGroup.add(src); // 放回
+      var glbB64 = b64FromBytes(new Uint8Array(glb));
+      var viewerURL = location.pathname.replace(/[^/]*$/, "") + "lib/viewer.js";
+      if (bridge) viewerURL = "holo://f/" + encodeURI(viewerURL).replace(/#/g, "%23").replace(/\?/g, "%3F");
+      fetch(viewerURL).then(function (r) { return r.text(); }).then(function (viewerJS) {
+        var html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>' +
+          escapeHtml(cfg.title) + ' — HoloStage</title>' +
+          '<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;}</style>' +
+          '</head><body>\n<script>window.HOLO_EXPORT=' + JSON.stringify(cfg) + ';window.HOLO_GLB="' + glbB64 + '";<\/script>\n' +
+          '<script>' + viewerJS + '<\/script>\n</body></html>';
+        if (bridge) {
+          var htmlB64 = b64FromBytes(new TextEncoder().encode(html));
+          bridge.postMessage({ type: "saveHtml", data: htmlB64, name: name });
+        } else {
+          downloadData(URL.createObjectURL(new Blob([html], { type: "text/html" })), name);
+        }
+        finishExport("网页已导出: " + name + "（浏览器直接打开）");
+      }).catch(function (e) { fullGroup.add(src); finishExport("导出失败: " + e.message); });
+    }, function (err) {
+      fullGroup.add(src);
+      finishExport("导出失败: " + (err && err.message ? err.message : err));
+    }, { binary: true, animations: animClips });
   };
 
   function downloadData(url, name) {

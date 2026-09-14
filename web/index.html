@@ -117,7 +117,11 @@
   .duo { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
   .duo input { width: 50%; }
   details.ring { margin: 6px 0; border: 1px solid var(--ui-line); padding: 4px 8px; }
-  details.ring summary { cursor: pointer; font-size: 12px; letter-spacing: 0.2em; color: var(--ui); outline: none; }
+  details.ring summary { cursor: pointer; font-size: 12px; letter-spacing: 0.2em; color: var(--ui); outline: none; display: flex; align-items: center; justify-content: space-between; }
+  .rstRing {
+    display: inline-block; width: auto; margin: 0; padding: 2px 8px;
+    font-size: 10px; letter-spacing: 0.1em; text-transform: none;
+  }
   details.ring[open] summary { border-bottom: 1px solid var(--ui-line); padding-bottom: 6px; margin-bottom: 4px; }
   button {
     display: block; width: 100%; margin: 8px 0; padding: 8px;
@@ -249,10 +253,6 @@
       <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">动画在「全彩（原材质）」模式下可见；线框为静态快照</div>
     </div>
 
-    <h2>界面配色（#RRGGBB，auto=跟随配色）</h2>
-    <div id="uiColorList"></div>
-    <button id="btnUIColorReset">全部恢复 auto</button>
-
     <h2>场景</h2>
     <div class="row"><label>转速</label><span id="valSpeed">0.5</span></div>
     <input type="range" id="inpSpeed" min="0" max="20" value="5" style="width:100%">
@@ -263,10 +263,19 @@
     <div class="row"><label>辉光脉冲</label><input type="checkbox" id="inpPulse"></div>
     <div class="row"><label>网格地台</label><input type="checkbox" id="inpGrid" checked></div>
     <div class="row"><label>HUD 叠加层</label><input type="checkbox" id="inpHud" checked></div>
+    <button id="btnSceneReset">重置场景（转速/动作回默认）</button>
 
-    <h2>全息环 ①（分段弧）</h2>
+    <details class="ring" id="uiColorSec">
+      <summary>界面配色（#RRGGBB，auto=跟随）</summary>
+      <div id="uiColorList" style="margin-top:8px;"></div>
+      <button id="btnUIColorReset">全部恢复 auto</button>
+    </details>
+
+    <h2>全息环 ①</h2>
     <details class="ring" open>
-      <summary>① 号环</summary>
+      <summary><span>① 号环</span><button type="button" class="rstRing" data-ring="1">重置</button></summary>
+      <div class="row"><label>样式</label></div>
+      <select class="ringStyle" data-ring="1"></select>
       <div class="row"><label>位置 X</label><span id="valR1X">0</span></div>
       <input type="range" class="ringCtl" data-ring="1" data-k="x" min="-500" max="500" value="0" style="width:100%">
       <div class="row"><label>位置 Y</label><span id="valR1Y">0</span></div>
@@ -275,12 +284,16 @@
       <input type="range" class="ringCtl" data-ring="1" data-k="s" min="20" max="160" value="100" style="width:100%">
       <div class="row"><label>俯仰角</label><span id="valR1P">0°</span></div>
       <input type="range" class="ringCtl" data-ring="1" data-k="p" min="-80" max="80" value="0" style="width:100%">
+      <div class="row"><label>偏航角</label><span id="valR1W">0°</span></div>
+      <input type="range" class="ringCtl" data-ring="1" data-k="w" min="-80" max="80" value="0" style="width:100%">
       <div class="row"><label>滚转角</label><span id="valR1R">0°</span></div>
       <input type="range" class="ringCtl" data-ring="1" data-k="r" min="-80" max="80" value="0" style="width:100%">
     </details>
-    <h2>全息环 ②（刻度盘）</h2>
+    <h2>全息环 ②</h2>
     <details class="ring" open>
-      <summary>② 号环</summary>
+      <summary><span>② 号环</span><button type="button" class="rstRing" data-ring="2">重置</button></summary>
+      <div class="row"><label>样式</label></div>
+      <select class="ringStyle" data-ring="2"></select>
       <div class="row"><label>位置 X</label><span id="valR2X">0</span></div>
       <input type="range" class="ringCtl" data-ring="2" data-k="x" min="-500" max="500" value="0" style="width:100%">
       <div class="row"><label>位置 Y</label><span id="valR2Y">0</span></div>
@@ -289,12 +302,16 @@
       <input type="range" class="ringCtl" data-ring="2" data-k="s" min="20" max="160" value="100" style="width:100%">
       <div class="row"><label>俯仰角</label><span id="valR2P">0°</span></div>
       <input type="range" class="ringCtl" data-ring="2" data-k="p" min="-80" max="80" value="0" style="width:100%">
+      <div class="row"><label>偏航角</label><span id="valR2W">0°</span></div>
+      <input type="range" class="ringCtl" data-ring="2" data-k="w" min="-80" max="80" value="0" style="width:100%">
       <div class="row"><label>滚转角</label><span id="valR2R">0°</span></div>
       <input type="range" class="ringCtl" data-ring="2" data-k="r" min="-80" max="80" value="0" style="width:100%">
     </details>
-    <h2>全息环 ③（虚线环）</h2>
+    <h2>全息环 ③</h2>
     <details class="ring">
-      <summary>③ 号环</summary>
+      <summary><span>③ 号环</span><button type="button" class="rstRing" data-ring="3">重置</button></summary>
+      <div class="row"><label>样式</label></div>
+      <select class="ringStyle" data-ring="3"></select>
       <div class="row"><label>位置 X</label><span id="valR3X">0</span></div>
       <input type="range" class="ringCtl" data-ring="3" data-k="x" min="-500" max="500" value="0" style="width:100%">
       <div class="row"><label>位置 Y</label><span id="valR3Y">0</span></div>
@@ -303,6 +320,8 @@
       <input type="range" class="ringCtl" data-ring="3" data-k="s" min="20" max="160" value="86" style="width:100%">
       <div class="row"><label>俯仰角</label><span id="valR3P">18°</span></div>
       <input type="range" class="ringCtl" data-ring="3" data-k="p" min="-80" max="80" value="18" style="width:100%">
+      <div class="row"><label>偏航角</label><span id="valR3W">0°</span></div>
+      <input type="range" class="ringCtl" data-ring="3" data-k="w" min="-80" max="80" value="0" style="width:100%">
       <div class="row"><label>滚转角</label><span id="valR3R">-12°</span></div>
       <input type="range" class="ringCtl" data-ring="3" data-k="r" min="-80" max="80" value="-12" style="width:100%">
     </details>
@@ -344,6 +363,7 @@
     <button id="btnGif">导出 GIF 动画</button>
     <button id="btnSeq">导出 PNG 帧序列</button>
     <button id="btnShot">导出当前帧 PNG</button>
+    <button id="btnHtml">导出网页 HTML（单文件）</button>
   </div>
   <button id="panelToggle" onclick="document.getElementById('panel').classList.remove('hidden')">面板</button>
 

@@ -21,8 +21,13 @@ echo "==> 打包主程序（three 0.186 + loaders + tinyusdz three 适配层）"
   --alias:tinyusdz-glue="$(pwd)/$SRC/tinyusdz-glue.js" \
   --outfile="$LIB/bundle.js"
 
+echo "==> 打包导出网页查看器（1.2.5，内嵌进单文件 HTML）"
+"$ESBUILD" "$SRC/viewer.module.js" \
+  --bundle --format=iife --target=es2020 --minify \
+  --outfile="$LIB/viewer.js"
+
 echo "==> 拷贝 tinyusdz.wasm"
 cp /Users/banqiu/.workbuddy/binaries/node/workspace/node_modules/tinyusdz/tinyusdz.wasm "$LIB/tinyusdz.wasm"
 
 echo "==> 完成"
-ls -la "$LIB/tinyusdz-glue.js" "$LIB/bundle.js"
+ls -la "$LIB/tinyusdz-glue.js" "$LIB/bundle.js" "$LIB/viewer.js"
