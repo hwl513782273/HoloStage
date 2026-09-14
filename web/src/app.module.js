@@ -194,6 +194,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     speed: 0.5, mode: "wire", angle: 32, scale: 1.0, zup: false,
     render: "wire",                     // 1.2.2: wire | full
     atmo: true,                         // 1.2.2: 全彩氛围（辉光+雾）
+    smoothNormals: true, lastLoad: null, // 1.2.9: 全彩平滑法线（切换时重载模型生效）
     bobOn: true, bobAmp: 1.0,           // 1.2.4: 悬浮呼吸
     parallaxOn: false,                  // 1.2.4: 鼠标视差
     pulseOn: false,                     // 1.2.4: 辉光脉冲
@@ -240,6 +241,56 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     } else {
       fullGroup.add(obj);
     }
+  }
+
+  /* ---------- 全彩平滑法线（1.2.9）----------
+   * STL/PLY（及部分 OBJ）是"三角汤"：顶点不共享、法线逐面平坦 → 全彩渲染出块状棱角。
+   * needsSmoothing：抽样比较同位置顶点的法线，夹角 > ~20° 判定为平坦着色；
+   * smoothGeometry：按位置精确合并顶点（保留 uv/颜色首现值），重算面积加权平滑法线。
+   * 已有平滑法线的模型（GLB/FBX/PMX 等）检测后直接跳过，不做任何改动。 */
+  function needsSmoothing(g) {
+    var pos = g.attributes.position, nor = g.attributes.normal;
+    if (!nor) return true;
+    var seen = {}, cap = Math.min(pos.count, 120000);
+    for (var i = 0; i < cap; i++) {
+      var key = pos.getX(i) + "," + pos.getY(i) + "," + pos.getZ(i);
+      if (seen[key] !== undefined) {
+        var j = seen[key];
+        var dot = nor.getX(i) * nor.getX(j) + nor.getY(i) * nor.getY(j) + nor.getZ(i) * nor.getZ(j);
+        if (dot < 0.94) return true; // 同位置法线夹角 > 20° → 平面着色
+      } else seen[key] = i;
+    }
+    return false;
+  }
+  function smoothGeometry(g) {
+    var pos = g.attributes.position, count = pos.count;
+    var hasUV = !!g.attributes.uv, hasCol = !!g.attributes.color;
+    var map = {}, verts = [], uvs = hasUV ? [] : null, cols = hasCol ? [] : null, nv = 0;
+    var idx = new Uint32Array(count);
+    for (var i = 0; i < count; i++) {
+      var x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      var key = x + "," + y + "," + z, id = map[key];
+      if (id === undefined) {
+        id = nv++; map[key] = id;
+        verts.push(x, y, z);
+        if (hasUV) uvs.push(g.attributes.uv.getX(i), g.attributes.uv.getY(i));
+        if (hasCol) cols.push(g.attributes.color.getX(i), g.attributes.color.getY(i), g.attributes.color.getZ(i));
+      }
+      idx[i] = id;
+    }
+    var ng = new THREE.BufferGeometry();
+    ng.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+    if (hasUV) ng.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    if (hasCol) ng.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+    ng.setIndex(new THREE.BufferAttribute(idx, 1));
+    ng.computeVertexNormals(); // 面积加权平均 → 曲面圆润
+    return ng;
+  }
+  function smoothPass(g) {
+    if (!g || !g.attributes || !g.attributes.position) return g;
+    if (g.index) return g;                                    // 已索引 = 建模时拓扑完好
+    if (g.attributes.skinIndex || g.attributes.skinWeight) return g; // 蒙皮网格不动
+    return needsSmoothing(g) ? smoothGeometry(g) : g;
   }
 
   /* ---------- 线框构建 ---------- */
@@ -382,6 +433,12 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     else if (url.charAt(0) === "/") enc = url; // http 调试环境的相对/绝对 URL
     else enc = encodeURI("file://" + url).replace(/#/g, "%23").replace(/\?/g, "%3F");
     function done(object3DorGeom, anims) {
+      state.lastLoad = { url: url, name: name }; // 1.2.9: 平滑法线开关切换时重载用
+      // 1.2.9: 全彩平滑法线（三角汤检测 + 按位置合并顶点重算）
+      if (state.smoothNormals) {
+        if (object3DorGeom.isBufferGeometry) object3DorGeom = smoothPass(object3DorGeom);
+        else object3DorGeom.traverse(function (o) { if (o.isMesh && o.geometry) o.geometry = smoothPass(o.geometry); });
+      }
       srcMeshes = [];
       if (object3DorGeom.isBufferGeometry) {
         srcMeshes.push({ geometry: object3DorGeom, matrix: new THREE.Matrix4() });
@@ -833,6 +890,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   // 渲染方式 / 全彩氛围（1.2.2）
   $("selRender").onchange = function () { state.render = this.value; applyRender(); };
   $("inpAtmo").onchange = function () { state.atmo = this.checked; refreshAtmo(); };
+  // 平滑法线（1.2.9）：几何处理发生在载入时，切换后重载当前模型立即生效
+  $("inpSmooth").checked = state.smoothNormals;
+  $("inpSmooth").onchange = function () {
+    state.smoothNormals = this.checked;
+    if (state.lastLoad && srcMeshes.length) {
+      statusEl.textContent = "RELOADING WITH " + (this.checked ? "SMOOTH" : "FLAT") + " NORMALS ...";
+      loadModel(state.lastLoad.url, state.lastLoad.name);
+    }
+  };
   // 三环控制（1.2；1.2.5 加偏航角 w 与样式切换）
   Array.prototype.forEach.call(document.querySelectorAll(".ringCtl"), function (el) {
     el.oninput = function () {
