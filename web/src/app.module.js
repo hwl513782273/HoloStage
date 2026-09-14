@@ -12,6 +12,9 @@
  *        GIF/PNG 帧导出也包含环；导出网页查看器同步
  * 1.3.0: PMX/PMD 真正动起来 —— VMD 动作（拖入 .vmd 自动挂载）+ ammo.js 物理（头发/裙摆/胸）
  *        MMDAnimationHelper 接管 IK/grant/物理，物理开关 + 重力/强度可调
+ * 1.3.1: 修复导出裁切：导出期间像素比压到 1，canvas 缓冲区 = 导出尺寸，
+ *        解决 Retina(×2) 下 gif.js 只取左上 1/4 导致「GIF 显示不全」；
+ *        PNG 序列/单帧 PNG 的实际像素也随之回到标称分辨率
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -1237,11 +1240,20 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     return [ew, h];
   }
   function withExportSize(w, h, work) {
+    // 1.3.1 修复：导出期间把像素比压到 1，让 canvas 缓冲区严格等于导出尺寸。
+    // 原实现沿用屏幕像素比（Retina = 2），缓冲区变成 2×；而 gif.js 的取像素逻辑是
+    // getImageData(0, 0, options.width, options.height)，只截左上 1/(pr²) 区域 → GIF 显示不全。
+    // 压到 1 后 gif 取到整幅，PNG 序列/单帧的实际像素也与状态栏标称分辨率一致。
+    var pr = renderer.getPixelRatio();
+    renderer.setPixelRatio(1);
     renderer.setSize(w, h, false);
     composer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    work(function () { resize(); }); // 恢复
+    work(function () {
+      renderer.setPixelRatio(pr); // 恢复屏幕显示用的像素比
+      resize();
+    });
   }
 
   /* ---------- 导出 GIF ---------- */
