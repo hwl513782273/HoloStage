@@ -338,8 +338,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     });
   }
 
-  /* ---------- 舞台尺寸（按比例，1.2） ---------- */
+  /* ---------- 舞台尺寸（按比例 + 避让面板，1.2） ---------- */
   var stageW = 960, stageH = 640;
+  var PANEL_W = 249; // 与 #panel 宽 248px + 1px 边线一致
   function currentRatio() {
     var v = $("selRatio").value;
     if (v === "custom") {
@@ -354,9 +355,12 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function resize() {
     var r = currentRatio();
     var W = window.innerWidth, H = window.innerHeight;
-    var s = Math.min(W / r[0], H / r[1]);
+    var panelVisible = !$("panel").classList.contains("hidden");
+    var viewW = panelVisible ? Math.max(64, W - PANEL_W) : W; // 画面区避开右侧面板
+    var s = Math.min(viewW / r[0], H / r[1]);
     stageW = Math.max(64, Math.floor(s * r[0]));
     stageH = Math.max(64, Math.floor(s * r[1]));
+    stageEl.style.left = (viewW / 2) + "px"; // 在画面区内居中（覆盖 CSS 的 50%）
     stageEl.style.width = stageW + "px";
     stageEl.style.height = stageH + "px";
     renderer.setSize(stageW, stageH, false);
@@ -443,6 +447,11 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   $("inpDelay").oninput = function () { state.delay = +this.value; $("valDelay").textContent = this.value; };
   document.getElementById("panelToggle").onclick = function () {
     document.getElementById("panel").classList.remove("hidden");
+    resize();
+  };
+  $("btnHide").onclick = function () {
+    $("panel").classList.add("hidden");
+    resize();
   };
 
   /* ---------- 拖放 ---------- */
