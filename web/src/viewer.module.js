@@ -9,6 +9,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { buildRingSVG } from "./rings.js";
+import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
 
 (function () {
   "use strict";
@@ -90,15 +91,10 @@ import { buildRingSVG } from "./rings.js";
   });
   function applyRings() {
     var base = Math.min(window.innerWidth, window.innerHeight) * 0.94;
-    var classic = CFG.ringMode === "classic"; // 1.2.6: 经典 1.0 — 锚定中心平转，忽略独立变换，隐藏③号环
+    var classic = CFG.ringMode === "classic"; // 1.2.7: 经典 = 3D 场景环（环心=世界中心，随相机透视）
+    if (ring3dGroup) ring3dGroup.visible = classic && CFG.hud !== false;
     rings.forEach(function (rg, i) {
-      if (classic) {
-        wraps[i].style.display = (i === 2) ? "none" : "";
-        wraps[i].style.width = base + "px";
-        wraps[i].style.height = base + "px";
-        wraps[i].style.transform = "translate(-50%, -50%)";
-        return;
-      }
+      if (classic) { wraps[i].style.display = "none"; return; } // 3D 环接管，CSS 环全隐藏
       wraps[i].style.display = "";
       var size = base * rg.s / 100;
       wraps[i].style.width = size + "px";
@@ -130,6 +126,33 @@ import { buildRingSVG } from "./rings.js";
     camera.lookAt(CAM_TARGET);
   }
   updateCamera();
+
+  /* 3D 全息环（1.2.7 经典模式）：环心固定在世界中心，随相机透视 */
+  var ring3dGroup = new THREE.Group();
+  ring3dGroup.position.copy(CAM_TARGET);
+  scene.add(ring3dGroup);
+  var ring3dMeshes = [];
+  function rebuildRing3D() {
+    ring3dMeshes.forEach(function (m) {
+      m.material.map.dispose(); m.material.dispose(); m.geometry.dispose();
+      ring3dGroup.remove(m);
+    });
+    ring3dMeshes = [];
+    rings.forEach(function (rg, i) {
+      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)));
+      var tex = new THREE.CanvasTexture(made.canvas);
+      tex.anisotropy = 4;
+      var mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(RING3D_SIZE, RING3D_SIZE),
+        new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending })
+      );
+      mesh.userData.spin = made.spin;
+      ring3dGroup.add(mesh);
+      ring3dMeshes.push(mesh);
+    });
+    applyRings();
+  }
+
   stageEl.addEventListener("wheel", function (e) {
     e.preventDefault();
     camDist *= (e.deltaY > 0 ? 1.08 : 1 / 1.08);
@@ -241,6 +264,7 @@ import { buildRingSVG } from "./rings.js";
   }
   window.addEventListener("resize", resize);
   resize();
+  rebuildRing3D(); // 1.2.7: 首次构建 3D 全息环
 
   var last = performance.now(), tAcc = 0, spin = 0;
   (function loop(now) {
@@ -252,6 +276,7 @@ import { buildRingSVG } from "./rings.js";
     root.rotation.y = spin + (CFG.parallax ? mousePar.x * 0.22 : 0);
     root.rotation.z = CFG.parallax ? mousePar.y * 0.1 : 0;
     root.position.y = CFG.bobOn ? Math.sin(tAcc * 1.7) * 0.055 * (CFG.bobAmp || 1) : 0;
+    ring3dMeshes.forEach(function (m) { m.rotation.z += m.userData.spin * dt; }); // 1.2.7
     if (CFG.pulse) bloom.strength = bloomBase * (1 + 0.22 * Math.sin(tAcc * 2.3));
     composer.render();
   })(last);

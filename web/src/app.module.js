@@ -8,6 +8,8 @@
  * 1.2.5: 全息环样式库（分段弧/刻度盘/虚线环/魔法阵/数据弧，每环独立切换）+ 偏航角；
  *        环组/场景组重置按钮；界面配色折叠；导出单文件网页 HTML（完整还原画面）
  * 1.2.6: 环模式（自由变换 / 经典 1.0 绕中点平转）；相机控制（滚轮缩放 / 左键拖动视角 / 右键复位）
+ * 1.2.7: 经典模式升级为真 3D 场景环（rings3d.js Canvas 纹理）：环心固定世界中心、随相机透视环绕，
+ *        GIF/PNG 帧导出也包含环；导出网页查看器同步
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -25,6 +27,7 @@ import { MMDLoader } from "three/examples/jsm/loaders/MMDLoader.js";
 import { TinyUSDZLoader } from "./vendor/TinyUSDZLoader.js";
 import { TinyUSDZLoaderUtils } from "./vendor/TinyUSDZLoaderUtils.js";
 import { buildRingSVG, RING_STYLES } from "./rings.js";
+import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
 import initTinyUSDZNative from "./tinyusdz-glue.js";
 
 (function () {
@@ -126,6 +129,32 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   var backLight = new THREE.DirectionalLight(0xdde8ff, 0.8); // 背光：避免金属 PBR 材质背光面全黑
   backLight.position.set(-2, 1.5, -3);
   scene.add(hemiLight); scene.add(dirLight); scene.add(ambLight); scene.add(backLight);
+
+  /* ---------- 3D 全息环（1.2.7 经典模式）：环心固定在世界中心，随相机透视 ---------- */
+  var ring3dGroup = new THREE.Group();
+  ring3dGroup.position.copy(CAM_TARGET);
+  scene.add(ring3dGroup);
+  var ring3dMeshes = [];
+  function rebuildRing3D() {
+    ring3dMeshes.forEach(function (m) {
+      m.material.map.dispose(); m.material.dispose(); m.geometry.dispose();
+      ring3dGroup.remove(m);
+    });
+    ring3dMeshes = [];
+    state.rings.forEach(function (rg, i) {
+      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)));
+      var tex = new THREE.CanvasTexture(made.canvas);
+      tex.anisotropy = 4;
+      var mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(RING3D_SIZE, RING3D_SIZE),
+        new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending })
+      );
+      mesh.userData.spin = made.spin;
+      ring3dGroup.add(mesh);
+      ring3dMeshes.push(mesh);
+    });
+    applyRings();
+  }
 
   var srcMeshes = [];
   var modelBaseY = 0; // 1.2.4: 悬浮呼吸的基准高度（normalizeModel 后记录）
@@ -380,16 +409,12 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
 
   function applyRings() {
     var base = Math.min(stageW, stageH) * 0.94;
-    var classic = state.ringMode === "classic"; // 1.2.6: 经典 1.0 — 锚定中心平转，忽略独立变换，隐藏③号环
+    var classic = state.ringMode === "classic"; // 1.2.7: 经典 = 3D 场景环（环心=世界中心，随相机透视）
+    var hudOn = $("inpHud") ? $("inpHud").checked : true;
+    ring3dGroup.visible = classic && hudOn;
     state.rings.forEach(function (rg, i) {
       var wrap = ringWraps[i];
-      if (classic) {
-        wrap.style.display = (i === 2) ? "none" : "";
-        wrap.style.width = base + "px";
-        wrap.style.height = base + "px";
-        wrap.style.transform = "translate(-50%, -50%)";
-        return;
-      }
+      if (classic) { wrap.style.display = "none"; return; } // 3D 环接管，CSS 环全隐藏
       wrap.style.display = "";
       var size = base * rg.s / 100;
       wrap.style.width = size + "px";
@@ -417,6 +442,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   function applyUIColors() {
     // 三环（SVG 用 currentColor）
     ringWraps.forEach(function (w, i) { w.style.color = partColor("ring" + (i + 1)); });
+    // 3D 全息环（1.2.7）：换色即重建纹理
+    if (ring3dMeshes.length) rebuildRing3D();
     // 标题 + 标题下划线
     var ct = partColor("title");
     titleEl.style.color = ct;
@@ -754,6 +781,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   };
   $("inpHud").onchange = function () {
     $("hud").style.display = this.checked ? "" : "none";
+    applyRings(); // 1.2.7: 同步 3D 环可见性
   };
   // 模型位移（1.2）
   ["PX", "PY", "PZ"].forEach(function (k) {
@@ -791,14 +819,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       var n = +this.dataset.ring;
       state.rings[n - 1].style = this.value;
       ringWraps[n - 1].innerHTML = buildRingSVG(this.value, n);
+      rebuildRing3D(); // 1.2.7: 经典模式下换样式要重建 3D 环纹理
     };
   });
-  // 环模式（1.2.6）：自由变换 / 经典 1.0
+  // 环模式（1.2.7）：自由变换 / 经典 1.0（3D 场景环）
   $("selRingMode").value = state.ringMode;
   $("selRingMode").onchange = function () {
     state.ringMode = this.value;
-    applyRings();
-    statusEl.textContent = (this.value === "classic") ? "RING MODE: CLASSIC 1.0" : "RING MODE: FREE";
+    rebuildRing3D();
+    statusEl.textContent = (this.value === "classic") ? "RING MODE: CLASSIC 1.0 (3D)" : "RING MODE: FREE";
   };
   // 环组重置（1.2.5）：位置/大小/俯仰/偏航/滚转回默认（保留样式）
   Array.prototype.forEach.call(document.querySelectorAll(".rstRing"), function (btn) {
@@ -826,6 +855,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     state.pulseOn = false; $("inpPulse").checked = false; refreshAtmo();
     gridGroup.visible = true; $("inpGrid").checked = true;
     $("hud").style.display = ""; $("inpHud").checked = true;
+    applyRings();
     statusEl.textContent = "SCENE RESET";
   };
   // 画面比例 / 导出分辨率（1.2）
@@ -1055,6 +1085,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   /* ---------- 尺寸与主循环 ---------- */
   window.addEventListener("resize", resize);
   resize();
+  rebuildRing3D(); // 1.2.7: 首次构建 3D 全息环（默认经典模式关闭时不可见，切换即用）
 
   var last = performance.now();
   var spinAngle = 0, tAcc = 0;
@@ -1110,6 +1141,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       modelRoot.rotation.z = roll;
       modelRoot.position.y = modelBaseY +
         (state.bobOn ? Math.sin(tAcc * 1.7) * 0.055 * state.bobAmp : 0);
+      // 3D 全息环平面内自转（1.2.7 经典模式）
+      ring3dMeshes.forEach(function (m) { m.rotation.z += m.userData.spin * dt; });
     }
     if (state.pulseOn) {
       var atmo = (state.render === "full") ? state.atmo : true;
