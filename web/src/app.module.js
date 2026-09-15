@@ -628,7 +628,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       state.fileName = name;
       $("inpTitle").value = base;
       titleEl.textContent = base;
-      var animNote = (anims && anims.length) ? " — " + anims.length + " 动画片段（全彩模式可见）" : "";
+      var animNote = (anims && anims.length) ? " — " + animClips.length + " 动画片段（全彩模式可见）" + (animDropped > 0 ? "，已隐藏 " + animDropped + " 个空片段" : "") : "";
       statusEl.textContent = name.toUpperCase() + " — " + res.tris.toLocaleString() + " TRIS — " + res.segs.toLocaleString() + " WIREFRAME SEGS" + animNote;
     }
     function fail(err) { showError("载入失败: " + (err && err.message ? err.message : err)); }
@@ -993,8 +993,48 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     mmdMesh = null; mmdVmdClip = null; mmdVmdName = "";
     if (!object3D || !clips || !clips.length) { refreshAnimUI(); return; }
     mixer = new THREE.AnimationMixer(object3D);
-    animClips = clips;
+    // 1.3.6：剔除空片段，避免用户点到占位 Take 时模型塌掉
+    animRawTotal = clips.length;
+    animClips = filterUsableClips(object3D, clips);
+    animDropped = animRawTotal - animClips.length;
+    if (!animClips.length) { animClips = clips; animDropped = 0; } // 全都不可用就原样保留，不倒扣功能
+    if (animDropped > 0) {
+      statusEl.textContent = "已过滤 " + animDropped + " 个空片段（无可用轨道 / 节点对不上），"
+        + "剩余 " + animClips.length + " 个真实动作";
+    }
     refreshAnimUI();
+  }
+  /* 1.3.6：过滤「空片段」。
+   * 游戏包导出的 FBX（实测 ReArise 的 Peckmon：31 个 Take 里 18 个是占位）
+   * 会给出 0 轨道、或节点名在场景里根本找不到的 AnimationClip。选中这类片段时
+   * 骨骼得不到任何驱动，模型停在绑定姿态 —— 实测是「塌成一坨」：
+   * Peckmon 正常姿态 0.803×0.803×1.051，空片段下只剩 0.188×0.145×0.188。
+   * 这里只保留「至少有一条轨道能落到真实节点」的片段。 */
+  var animRawTotal = 0, animDropped = 0;
+  function collectNodes(root) {
+    var m = {};
+    if (root) root.traverse(function (o) { if (o.name) m[o.name] = 1; if (o.uuid) m[o.uuid] = 1; });
+    return m;
+  }
+  function filterUsableClips(root, clips) {
+    var map = collectNodes(root), keep = [], cache = {};
+    for (var i = 0; i < clips.length; i++) {
+      var c = clips[i], ok = false;
+      for (var k = 0; k < c.tracks.length; k++) {
+        var nm = c.tracks[k].name || "", dot = nm.lastIndexOf(".");
+        var node = dot > 0 ? nm.slice(0, dot) : nm;
+        if (!node) continue;
+        if (!(node in cache)) {
+          // 优先用 three 自己的解析器，能处理 bones[Hips] 这类带方括号的路径名
+          var found = null;
+          try { found = THREE.PropertyBinding.findNode(root, node) || null; } catch (e) { found = null; }
+          cache[node] = !!found || !!map[node];
+        }
+        if (cache[node]) { ok = true; break; }
+      }
+      if (ok) keep.push(c);
+    }
+    return keep;
   }
   function playAnimClip(idx) {
     if (!mixer || !animClips[idx]) return;
@@ -1311,6 +1351,47 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     if (skelPlaying) statusEl.textContent = "播放自定动作（" + skelFrames.length + " 帧 · " + skelDur.toFixed(1) + "s 循环）";
   };
 
+  /* 自检钩子（1.3.6）：蒙皮后真实顶点包围盒 —— 不受光照/明暗影响，判定动画是否把模型搞炸。
+   * 每块 SkinnedMesh 抽样最多 4000 个顶点，applyBoneTransform 后转世界坐标求范围。
+   * - diag：包围盒对角线长度（世界空间）
+   * - verts/nan：采样点数与 NaN 点数（NaN 多 = 骨骼矩阵炸了）
+   * 只读诊断，删掉不影响功能。 */
+  var _skinPt = new THREE.Vector3();
+  window.holoSkinBox = function () {
+    if (!srcMeshes.length) return null;
+    modelRoot.updateMatrixWorld(true);
+    var min = new THREE.Vector3(Infinity, Infinity, Infinity);
+    var max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    var verts = 0, nan = 0, meshes = 0;
+    modelRoot.traverse(function (o) {
+      if (!o.isSkinnedMesh || !o.geometry || !o.geometry.attributes.position) return;
+      var pa = o.geometry.attributes.position;
+      if (!o.skeleton || !o.skeleton.bones.length) return;
+      meshes++;
+      var stride = Math.max(1, Math.floor(pa.count / 4000));
+      for (var i = 0; i < pa.count; i += stride) {
+        _skinPt.fromBufferAttribute(pa, i);
+        try { o.applyBoneTransform(i, _skinPt); } catch (e) { nan++; continue; }
+        o.localToWorld(_skinPt);
+        if (!isFinite(_skinPt.x) || !isFinite(_skinPt.y) || !isFinite(_skinPt.z)) { nan++; continue; }
+        verts++;
+        if (_skinPt.x < min.x) min.x = _skinPt.x;
+        if (_skinPt.y < min.y) min.y = _skinPt.y;
+        if (_skinPt.z < min.z) min.z = _skinPt.z;
+        if (_skinPt.x > max.x) max.x = _skinPt.x;
+        if (_skinPt.y > max.y) max.y = _skinPt.y;
+        if (_skinPt.z > max.z) max.z = _skinPt.z;
+      }
+    });
+    if (!verts) return { meshes: meshes, verts: 0, nan: nan };
+    var dx = max.x - min.x, dy = max.y - min.y, dz = max.z - min.z;
+    return {
+      meshes: meshes, verts: verts, nan: nan,
+      min: [min.x, min.y, min.z], max: [max.x, max.y, max.z], size: [dx, dy, dz],
+      diag: Math.sqrt(dx * dx + dy * dy + dz * dz)
+    };
+  };
+
   /* 自检钩子（1.3.5）：只读暴露骨架/姿态/关键帧状态，供黑盒验证脚本取证。
    * 不参与任何业务逻辑，删掉也不影响功能。 */
   window.holoSkelDiag = function () {
@@ -1336,7 +1417,28 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     out.playing = skelPlaying;
     out.t = +skelT.toFixed(3);
     out.dur = skelDur;
+    // 1.3.6: 骨长自检 —— 离群「挂点骨」是否被截断（逻辑在 skeleton.js 的 drawnLengths）
+    if (skelView && skelView.drawnLengths) {
+      var dl = skelView.drawnLengths();
+      out.boneLen = {
+        max: +dl.max.toFixed(5), median: +dl.median.toFixed(5),
+        minLen: +dl.minLen.toFixed(5), maxLen: +dl.maxLen.toFixed(5),
+        span: +dl.span.toFixed(5), bones: dl.bones, leaf: dl.leafBones,
+        leafDirCos: dl.leafDirCos,
+        rawMax: +dl.rawMax.toFixed(5), clamped: dl.clamped, clampedLeaf: dl.clampedLeaf,
+        clampedShare: dl.clampedShare,
+        maxOverSpan: dl.span > 1e-9 ? +(dl.max / dl.span).toFixed(4) : 0
+      };
+    }
     return out;
+  };
+  // 1.3.6 自检：空片段过滤结果取证
+  window.holoClipInfo = function () {
+    return {
+      rawTotal: animRawTotal, kept: animClips.length, dropped: animDropped,
+      names: animClips.map(function (c) { return c.name; }),
+      tracks: animClips.map(function (c) { return c.tracks.length; })
+    };
   };
   window.holoResetPose = resetAllPose;
   window.holoPickAt = function (clientX, clientY) { // 自检用：屏幕坐标 → 命中的骨骼索引（无则 -1）

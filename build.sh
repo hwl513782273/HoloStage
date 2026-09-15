@@ -21,7 +21,12 @@ echo "==> 编译 arm64"
 swiftc -O -sdk "$SDK" -target arm64-apple-macosx12.0 \
   Sources/main.swift -o "$BUILD/arm64/$APP" -framework Cocoa -framework WebKit
 echo "==> lipo 合并 universal"
-lipo -create "$BUILD/x86/$APP" "$BUILD/arm64/$APP" -output "$BUILD/$APP.app/Contents/MacOS/$APP"
+# lipo 会在「输出文件旁边」建 <out>.lipo 临时文件再改名，涉及 unlink；
+# 源码目录下做这个动作会被沙箱拦（error: can't move temporary file ... Operation not permitted），
+# 所以先落到 /tmp（可自由读写删），再 mv 进 bundle。
+UNIV="/tmp/${APP}.univ.$$"
+lipo -create "$BUILD/x86/$APP" "$BUILD/arm64/$APP" -output "$UNIV"
+mv "$UNIV" "$BUILD/$APP.app/Contents/MacOS/$APP"
 
 echo "==> 组装 bundle"
 cp Resources/Info.plist "$BUILD/$APP.app/Contents/Info.plist"

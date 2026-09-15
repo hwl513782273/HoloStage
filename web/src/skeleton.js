@@ -131,8 +131,9 @@ export function createSkeletonView(vis, opts) {
   mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
 
   var posBuf = new Float32Array(n * 3);
+  var dirBuf = new Float32Array(n * 3);  // 每根骨「实际画出来的朝向」（自检用：验末梢骨没被带歪）
   var selected = -1;
-  var medianLen = 0;
+  var metrics = null;   // 骨长基准（无量纲，占骨架跨度的比例）—— 见 measureMetrics
   var visible = true;
 
   function refreshColors() {
@@ -147,51 +148,110 @@ export function createSkeletonView(vis, opts) {
     mesh.instanceColor.needsUpdate = true;
   }
 
-  function update() {
-    if (!mesh.visible) return;
-    // 1) 骨架世界矩阵刷新：对每个顶层骨更新整棵子树（比逐骨 updateWorldMatrix 快得多）
+  /* ---------- 骨长基准：存成「占骨架跨度的比例」（无量纲）----------
+   * 为什么不缓存绝对值？用户拉「模型缩放」后骨的世界位置整体放大/缩小，
+   * 而绝对值缓存不变 → minLen 失真，短骨会被下限全部撑成海胆。 */
+  function spanOf() {
+    var mnx = Infinity, mny = Infinity, mnz = Infinity;
+    var mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+    for (var i = 0; i < n; i++) {
+      var x = posBuf[i * 3], y = posBuf[i * 3 + 1], z = posBuf[i * 3 + 2];
+      if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+      if (y < mny) mny = y; if (y > mxy) mxy = y;
+      if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+    }
+    return Math.max(mxx - mnx, mxy - mny, mxz - mnz) || 0;
+  }
+  function boneDist(a, b) {
+    var dx = posBuf[a * 3] - posBuf[b * 3];
+    var dy = posBuf[a * 3 + 1] - posBuf[b * 3 + 1];
+    var dz = posBuf[a * 3 + 2] - posBuf[b * 3 + 2];
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+  /* 只算一次：med = 中位骨长（极短骨的显示下限）；p90 = 90 分位（离群长骨的截断上限）。
+   * 实测——阿古兽/白虎兽/朱雀兽/咲耶兽X 这些游戏包模型里，「特效 / 命中 / 挂点」骨
+   * （TP01_xxx、FP01_xx、CP01_xx、head_0274 …）离父骨 9~23 倍于中位骨长，全是子骨 0 的末梢骨；
+   * 而 p90 始终只有最长值的 1/4~1/2，所以 p90×1.8 既压得住巨刺，又只削到 Mixamo 大腿骨 2.6%。 */
+  function measureMetrics() {
+    var lens = [], k, L;
+    for (k = 0; k < n; k++) {
+      if (vis.childIdx[k].length) L = boneDist(k, vis.childIdx[k][0]);
+      else if (vis.parentIdx[k] >= 0) L = boneDist(k, vis.parentIdx[k]);
+      else continue;
+      if (L > 1e-9) lens.push(L);
+    }
+    var span = spanOf();
+    if (!lens.length || !(span > 1e-9)) { metrics = { med: 0.03, p90: 0.09 }; return; }
+    lens.sort(function (a, b) { return a - b; });
+    metrics = {
+      med: lens[lens.length >> 1] / span,
+      p90: lens[Math.min(lens.length - 1, Math.floor(lens.length * 0.9))] / span
+    };
+  }
+  /** 骨长的下限 / 上限 —— 唯一定义处，update() 与自检 drawnLengths() 共用（避免两处漂移）：
+   *  下限 = 中位骨长 × 0.22（太小的骨看不见）
+   *  上限 = min(p90 × 1.8, 骨架跨度 × 0.30)  ← 两道闸：p90 挡离群挂点骨，跨度闸保证
+   *         「单根骨永远不超过骨架自身尺寸的 30%」，这条不改模型也能肉眼核验。 */
+  function lengthBounds() {
+    if (!metrics) measureMetrics();
+    var span = spanOf();
+    var medLen = metrics.med * span;
+    var minLen = medLen * 0.22;
+    var maxLen = Math.min(metrics.p90 * span * 1.8, span * 0.30);
+    if (maxLen < medLen * 2.5) maxLen = medLen * 2.5;
+    return { span: span, medLen: medLen, minLen: minLen, maxLen: maxLen };
+  }
+  /** 这根骨「原始」长度（未截断）：有子骨取到第一个子骨，末梢骨取到父骨的距离。 */
+  function rawLenAt(j) {
+    if (vis.childIdx[j].length) return boneDist(j, vis.childIdx[j][0]);
+    if (vis.parentIdx[j] >= 0) return boneDist(j, vis.parentIdx[j]);
+    return 0;
+  }
+  /** 这根骨「会画多长」。update() 与自检 drawnLengths() 共用，保证自检测的就是真代码。 */
+  function boneLenAt(j, minLen, maxLen) {
+    var L = rawLenAt(j);
+    if (!(L > 1e-9)) L = minLen;
+    if (L < minLen) L = minLen;
+    if (L > maxLen) L = maxLen;
+    return L;
+  }
+  function refreshPos() {
+    // 骨架世界矩阵刷新：对每个顶层骨更新整棵子树（比逐骨 updateWorldMatrix 快得多）
     for (var r = 0; r < vis.roots.length; r++) vis.roots[r].updateWorldMatrix(true, true);
-    // 2) 抓所有骨的世界位置（直接读 matrixWorld，避免 getWorldPosition 的重复父链更新）
+    // 抓所有骨的世界位置（直接读 matrixWorld，避免 getWorldPosition 的重复父链更新）
     for (var i = 0; i < n; i++) {
       var m = vis.bones[i].matrixWorld.elements;
       posBuf[i * 3] = m[12]; posBuf[i * 3 + 1] = m[13]; posBuf[i * 3 + 2] = m[14];
     }
-    // 3) 每骨：head=自身，tail=第一个子骨（末梢骨则沿父→自身方向延伸等长）
-    if (!medianLen) { // 中位骨长只算一次，用于给极短骨兜底，免得太小的骨看不见
-      var lens = [];
-      for (var k = 0; k < n; k++) {
-        var ch = vis.childIdx[k];
-        if (!ch.length) continue;
-        var dx = posBuf[ch[0] * 3] - posBuf[k * 3];
-        var dy = posBuf[ch[0] * 3 + 1] - posBuf[k * 3 + 1];
-        var dz = posBuf[ch[0] * 3 + 2] - posBuf[k * 3 + 2];
-        var L = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (L > 1e-6) lens.push(L);
-      }
-      lens.sort(function (a, b) { return a - b; });
-      medianLen = lens.length ? lens[lens.length >> 1] : 0.05;
-    }
-    var minLen = medianLen * 0.22;
+  }
 
+  function update() {
+    if (!mesh.visible) return;
+    refreshPos();
+    var bd = lengthBounds();
+
+    // 每骨：head = 自身，tail = 第一个子骨（末梢骨则沿「父→自身」方向延伸这段距离）
     for (var j = 0; j < n; j++) {
       _head.set(posBuf[j * 3], posBuf[j * 3 + 1], posBuf[j * 3 + 2]);
-      var kids = vis.childIdx[j], len;
+      var kids = vis.childIdx[j], pi = vis.parentIdx[j], back = false;
       if (kids.length) {
         _tail.set(posBuf[kids[0] * 3], posBuf[kids[0] * 3 + 1], posBuf[kids[0] * 3 + 2]);
-        len = _head.distanceTo(_tail);
-      } else {
-        var pi = vis.parentIdx[j];
-        if (pi >= 0) { // 末梢：沿父→自身方向再延伸一个自身长度
-          _dir.set(_head.x - posBuf[pi * 3], _head.y - posBuf[pi * 3 + 1], _head.z - posBuf[pi * 3 + 2]);
-          len = _dir.length() || minLen;
-          if (len < 1e-6) _dir.set(0, 1, 0); else _dir.multiplyScalar(1 / len);
-        } else {       // 孤骨：朝上给个默认长度
-          _dir.set(0, 1, 0); len = minLen;
-        }
+      } else if (pi >= 0) {
+        _tail.set(posBuf[pi * 3], posBuf[pi * 3 + 1], posBuf[pi * 3 + 2]);
+        back = true;   // _tail − _head 指向父骨，要反向才是「父→自身」
       }
-      if (len < minLen) len = minLen;
-      _dir.subVectors(_tail, _head);
+      var len = boneLenAt(j, bd.minLen, bd.maxLen);
+      // ⚠️ 方向必须在这里独立算完。1.3.5 的写法是先在末梢骨分支里算好方向，随后又被
+      //    `_dir.subVectors(_tail, _head)` 无条件覆盖，而末梢骨那一支的 _tail 还停在上一次
+      //    「有子骨」那根骨的位置上 → 末梢骨方向变成随机值，画出来是一圈放射状乱刺。
+      if (kids.length || pi >= 0) {
+        _dir.subVectors(_tail, _head);
+        if (back) _dir.negate();
+      } else {
+        _dir.set(0, 1, 0);   // 孤骨：朝上
+      }
       if (_dir.lengthSq() < 1e-12) _dir.set(0, 1, 0); else _dir.normalize();
+      dirBuf[j * 3] = _dir.x; dirBuf[j * 3 + 1] = _dir.y; dirBuf[j * 3 + 2] = _dir.z;
       var thick = len * 0.11;                       // 钻石的胖瘦（Blender 比例）
       if (j === selected) { len *= 1.18; thick *= 1.5; }
       _quat.setFromUnitVectors(_UP, _dir);
@@ -216,6 +276,45 @@ export function createSkeletonView(vis, opts) {
     mesh: mesh,
     bones: vis.bones,
     update: update,
+    /* 自检用：按 update() 的同一套规则报出每根骨现在会画多长（含下限 / 上限截断）。
+       用来断言两件事——① 离群挂点骨被压住；② 正常长骨（如 Mixamo 大腿）没被误伤。 */
+    drawnLengths: function () {
+      refreshPos();
+      var bd = lengthBounds();
+      var out = [], leaf = 0, clamped = 0, clampedLeaf = 0, rawMax = 0;
+      for (var k = 0; k < n; k++) {
+        var isLeaf = !vis.childIdx[k].length;
+        if (isLeaf) leaf++;
+        var raw = rawLenAt(k);
+        if (raw > rawMax) rawMax = raw;
+        if (raw > bd.maxLen + 1e-9) { clamped++; if (isLeaf) clampedLeaf++; }
+        out.push(boneLenAt(k, bd.minLen, bd.maxLen));
+      }
+      var sorted = out.slice().sort(function (a, b) { return a - b; });
+      // 末梢骨朝向自检：画出来的方向 vs「父→自身」真值的平均余弦。
+      // 1.3.5 的 bug 会让这个值掉到 ~0（方向被上根骨的陈旧 tail 覆盖），修好后应 ≈ 1。
+      var sum = 0, cnt = 0;
+      for (var m = 0; m < n; m++) {
+        var pi = vis.parentIdx[m];
+        if (vis.childIdx[m].length || pi < 0) continue;
+        var dx = posBuf[m * 3] - posBuf[pi * 3];
+        var dy = posBuf[m * 3 + 1] - posBuf[pi * 3 + 1];
+        var dz = posBuf[m * 3 + 2] - posBuf[pi * 3 + 2];
+        var L2 = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (L2 < 1e-9) continue;
+        sum += (dirBuf[m * 3] * dx + dirBuf[m * 3 + 1] * dy + dirBuf[m * 3 + 2] * dz) / L2;
+        cnt++;
+      }
+      return {
+        lens: out, span: bd.span, minLen: bd.minLen, maxLen: bd.maxLen, medLen: bd.medLen,
+        max: sorted.length ? sorted[sorted.length - 1] : 0,
+        median: sorted.length ? sorted[sorted.length >> 1] : 0,
+        bones: sorted.length, leafBones: leaf,
+        leafDirCos: cnt ? +(sum / cnt).toFixed(4) : 1,
+        rawMax: rawMax, clamped: clamped, clampedLeaf: clampedLeaf,
+        clampedShare: sorted.length ? +(clamped / sorted.length).toFixed(4) : 0
+      };
+    },
     pick: pick,
     getSelected: function () { return selected; },
     setSelected: function (i) { selected = (i >= 0 && i < n) ? i : -1; refreshColors(); update(); },
