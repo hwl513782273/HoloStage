@@ -438,6 +438,29 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     if (targets.length) obj.updateMatrixWorld(true);
   }
 
+  /* ---------- 归一化后重新 bind（1.3.5.4）----------
+   * b25 摘挂把 bindMatrix 定格在摘挂瞬间的网格世界矩阵；normalizeModel 之后
+   * modelRoot 被缩放，骨骼世界矩阵跟着缩放，但 bind 矩阵对还停在旧尺度 ——
+   * 合成结果：蒙皮静止输出 = root²×meshStatic，而 raw 线框 = root×meshStatic，
+   * 蒙皮/raw 恰好差一个 root 缩放比（CHR214 实测 0.27 倍「缩小偏移」，
+   * CHR702 也隐性缩小 0.55 倍）。修法：归一化后按当前静止姿态重算 boneInverses
+   * 并把 bindMatrix 更新为当前网格世界矩阵 —— 静止全彩从此精确贴合 raw 几何。
+   * 骨骼 TRS 不动（动画曲线坐标系不受影响），GLB 等静止=bind 的模型为无操作。 */
+  function rebindSkinnedMeshes(obj) {
+    if (!obj || !obj.isObject3D) return;
+    obj.updateMatrixWorld(true);
+    var seen = new Set();
+    obj.traverse(function (o) {
+      if (!o.isSkinnedMesh || !o.skeleton || seen.has(o.skeleton)) return;
+      seen.add(o.skeleton);
+      var sk = o.skeleton;
+      if (!sk.bones.length) return;
+      sk.calculateInverses();          // 以当前静止骨骼世界矩阵为绑定基准
+      o.bindMatrix.copy(o.matrixWorld);
+      o.bindMatrixInverse.copy(o.matrixWorld).invert();
+    });
+  }
+
   /* ---------- 全彩平滑法线（1.2.9）----------
    * STL/PLY（及部分 OBJ）是"三角汤"：顶点不共享、法线逐面平坦 → 全彩渲染出块状棱角。
    * needsSmoothing：抽样比较同位置顶点的法线，夹角 > ~20° 判定为平坦着色；
@@ -655,6 +678,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       stabilizeSkinnedMeshes(object3DorGeom);   // 1.3.5.2: 挂在骨骼下的蒙皮网格摘挂（防全彩塌陷）
       var res = buildWireframe();
       normalizeModel();
+      rebindSkinnedMeshes(object3DorGeom);      // 1.3.5.4: 归一化后重算 bind（防蒙皮静止态与线框尺度脱钩）
       applyRender();                            // 1.3.5.2: 载入即套用当前渲染方式（修复首载线框/全彩两层同显）
       setupAnimations(object3DorGeom.isBufferGeometry ? null : object3DorGeom, anims || [], kind);
       // 1.3.5: 骨架 —— 纯几何（STL/OBJ/PLY）传 null，面板会显示「无骨骼」提示
