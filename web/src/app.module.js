@@ -663,7 +663,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       state.fileName = name;
       $("inpTitle").value = base;
       titleEl.textContent = base;
-      var animNote = (anims && anims.length) ? " — " + animClips.length + " 动画片段（全彩模式可见）" + (animDropped > 0 ? "，已隐藏 " + animDropped + " 个空片段" : "") : "";
+      var animNote = (anims && anims.length) ? " — " + animClips.length + " 动画片段（全彩模式可见）" + (animDropped > 0 ? "，已隐藏 " + animDropped + " 个空/异骨架片段" : "") : "";
       statusEl.textContent = name.toUpperCase() + " — " + res.tris.toLocaleString() + " TRIS — " + res.segs.toLocaleString() + " WIREFRAME SEGS" + animNote;
     }
     function fail(err) { showError("载入失败: " + (err && err.message ? err.message : err)); }
@@ -1030,13 +1030,34 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     mixer = new THREE.AnimationMixer(object3D);
     // 1.3.6：剔除空片段，避免用户点到占位 Take 时模型塌掉
     animRawTotal = clips.length;
-    animClips = filterUsableClips(object3D, clips);
-    animDropped = animRawTotal - animClips.length;
-    if (!animClips.length) { animClips = clips; animDropped = 0; } // 全都不可用就原样保留，不倒扣功能
-    if (animDropped > 0) {
-      statusEl.textContent = "已过滤 " + animDropped + " 个空片段（无可用轨道 / 节点对不上），"
-        + "剩余 " + animClips.length + " 个真实动作";
+    var usable = filterUsableClips(object3D, clips);
+    animClips = usable;
+    // 1.3.5.3：再剔除「异骨架变体」片段（第 0 帧姿态与骨骼静止姿态对不上，播放即碎）
+    var rigDropped = 0;
+    if (animClips.length) {
+      var good = filterRigMismatchedClips(object3D, animClips);
+      rigDropped = animClips.length - good.length;
+      animClips = good;
     }
+    if (animClips.length) {
+      animDropped = animRawTotal - animClips.length;
+      if (animDropped > 0) {
+        statusEl.textContent = "已过滤 " + animDropped + " 个坏片段（"
+          + (animDropped - rigDropped) + " 个空片段 / " + rigDropped + " 个异骨架变体），"
+          + "剩余 " + animClips.length + " 个真实动作";
+      }
+    } else {
+      // 1.3.5.3：所有可用片段都是异骨架变体（实测 ReArise Gallantmon chr126.fbx：
+      // 文件里 16 个 Take 是被 rip 丢空的壳、15 个真 Take 全属于另一套骨架）——
+      // 播放任何一个都会把模型拧碎。此时弃用全部动画，退回「空片段 = 绑定姿态」
+      // 安全静态显示，绝不自动播放会炸的片段。
+      var safe = clips.filter(function (c) { return usable.indexOf(c) < 0; });
+      animClips = safe.length ? safe : clips;
+      animDropped = 0;
+      statusEl.textContent = "检测到 " + animRawTotal + " 个动作均与本骨架不匹配（异骨架 rip），"
+        + "已停用动画，按静止姿态显示";
+    }
+    window.holoAnimClips = function () { return { kept: animClips, all: clips }; }; // 1.3.5.3 自检取证用
     refreshAnimUI();
   }
   /* 1.3.6：过滤「空片段」。
@@ -1070,6 +1091,89 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       if (ok) keep.push(c);
     }
     return keep;
+  }
+  /* 1.3.5.3：过滤「播放即碎」片段（异骨架变体动作）。
+   * 实测 ReArise Gallantmon (chr126.fbx)：文件里 16 个 Take 是被 rip 丢空的壳、
+   * 15 个真 Take 全属于另一套骨架变体 —— 播放任何一个都会把模型拧碎：
+   * 全彩模式散成长杆/碎片（CHR776 用户报告），CPU 蒙皮包围盒对角线暴涨 3.6~17 倍。
+   * 判据（加载器无关）：CPU 试播 —— 对每个片段用临时 AnimationMixer 采样若干时刻，
+   * 手工按蒙皮权重算顶点世界包围盒，diag 超过静止 bindDiag × 2.5 或出现 NaN 即判坏。
+   * （与 D3 自检同口径：健康动作 diag 比率在 [0.5, 2.5] 内。）
+   * 采样后恢复骨骼静止 TRS；全被滤光时返回空数组，由调用方回退安全静态。 */
+  function filterRigMismatchedClips(root, clips) {
+    var skinned = null;
+    root.traverse(function (o) { if (!skinned && o.isSkinnedMesh) skinned = o; });
+    if (!skinned || !skinned.skeleton || !skinned.skeleton.bones.length) return clips;
+    var bones = skinned.skeleton.bones;
+    var saved = bones.map(function (b) {
+      return { p: b.position.clone(), q: b.quaternion.clone(), s: b.scale.clone() };
+    });
+    function restore() {
+      bones.forEach(function (b, i) {
+        b.position.copy(saved[i].p); b.quaternion.copy(saved[i].q); b.scale.copy(saved[i].s);
+      });
+      root.updateMatrixWorld(true);
+      if (skinned.skeleton.update) skinned.skeleton.update();
+    }
+    function cpuDiag() {
+      root.updateMatrixWorld(true);
+      if (skinned.skeleton.update) skinned.skeleton.update();
+      var si = skinned.geometry.attributes.skinIndex, sw = skinned.geometry.attributes.skinWeight;
+      var pos = skinned.geometry.attributes.position;
+      var bm = skinned.skeleton.boneMatrices;
+      var min = [1e9, 1e9, 1e9], max = [-1e9, -1e9, -1e9];
+      var v = new THREE.Vector3();
+      var step = Math.max(1, Math.floor(pos.count / 1200));
+      for (var k = 0; k < pos.count; k += step) {
+        v.set(pos.getX(k), pos.getY(k), pos.getZ(k)).applyMatrix4(skinned.bindMatrix);
+        var x = 0, y = 0, z = 0, nan = false;
+        for (var j = 0; j < 4; j++) {
+          var w = j === 0 ? sw.getX(k) : (j === 1 ? sw.getY(k) : (j === 2 ? sw.getZ(k) : sw.getW(k)));
+          if (w === 0) continue;
+          var b = (j === 0 ? si.getX(k) : (j === 1 ? si.getY(k) : (j === 2 ? si.getZ(k) : si.getW(k)))) * 16;
+          var vx = v.x, vy = v.y, vz = v.z;
+          x += w * (bm[b] * vx + bm[b + 4] * vy + bm[b + 8] * vz + bm[b + 12]);
+          y += w * (bm[b + 1] * vx + bm[b + 5] * vy + bm[b + 9] * vz + bm[b + 13]);
+          z += w * (bm[b + 2] * vx + bm[b + 6] * vy + bm[b + 10] * vz + bm[b + 14]);
+        }
+        // detached 模式必须乘 bindMatrixInverse（b25 摘挂后 ≠ 单位阵）
+        v.set(x, y, z).applyMatrix4(skinned.bindMatrixInverse).applyMatrix4(skinned.matrixWorld);
+        for (var c = 0; c < 3; c++) {
+          var val = v.getComponent(c);
+          if (val !== val) nan = true;
+          if (val < min[c]) min[c] = val;
+          if (val > max[c]) max[c] = val;
+        }
+        if (nan) return NaN;
+      }
+      var dx = max[0] - min[0], dy = max[1] - min[1], dz = max[2] - min[2];
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    var bindDiag = cpuDiag();
+    if (!(bindDiag > 0) || !isFinite(bindDiag)) { restore(); return clips; }
+    var probeMixer = new THREE.AnimationMixer(root);
+    var keep = [];
+    for (var i = 0; i < clips.length; i++) {
+      var c = clips[i], bad = false;
+      if (c.tracks.length) {
+        try {
+          var action = probeMixer.clipAction(c);
+          action.play();
+          for (var t = 0.12; t <= 1.3; t += 0.55) {
+            probeMixer.setTime(t);
+            var d = cpuDiag();
+            if (!isFinite(d) || d > bindDiag * 2.5) { bad = true; break; }
+          }
+          action.stop();
+          probeMixer.uncacheAction(c);
+        } catch (e) { bad = false; }
+        restore();
+      }
+      if (!bad) keep.push(c);
+    }
+    probeMixer.stopAllAction();
+    restore();
+    return keep; // 可能为空 —— 由调用方决定回退策略（安全静态），此处不擅自回退
   }
   function playAnimClip(idx) {
     if (!mixer || !animClips[idx]) return;
