@@ -40,6 +40,8 @@ import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
+import { TGALoader } from "three/examples/jsm/loaders/TGALoader.js";   // 1.3.5.2: Masters 包 .tga 贴图
+import { DDSLoader } from "three/examples/jsm/loaders/DDSLoader.js";   // 1.3.5.2: Masters 包 .dds 贴图
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
@@ -410,6 +412,32 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     }
   }
 
+  /* ---------- 蒙皮网格摘挂（1.3.5.2）----------
+   * 游戏 ripping 的 FBX 常把 SkinnedMesh 挂在动画骨骼的子级。attached 模式下
+   * bindMatrixInverse 每帧被重算为「mesh 当前世界矩阵的逆」（SkinnedMesh.updateMatrixWorld），
+   * 父骨骼一带动画，逆矩阵跟着骨骼姿态乱变 → GPU 蒙皮把整个模型压碎成一小簇碎片
+   * （CHR702 / CHR201 等全彩塌陷的根因；CPU 侧 applyBoneTransform 不受影响所以数据正常）。
+   * 修法：把这类网格摘到加载树根节点下并转 detached 模式，bind 矩阵固定为摘挂时的世界变换。 */
+  function stabilizeSkinnedMeshes(obj) {
+    if (!obj || !obj.isObject3D) return;
+    obj.updateMatrixWorld(true);
+    var targets = [];
+    obj.traverse(function (o) {          // 第一遍只收集（遍历中改树会炸迭代器）
+      if (!o.isSkinnedMesh) return;
+      for (var p = o.parent; p; p = p.parent) {
+        if (p.isBone) { targets.push(o); break; }
+      }
+    });
+    targets.forEach(function (o) {       // 第二遍摘挂
+      var world = o.matrixWorld.clone();
+      obj.attach(o);                     // 保持世界变换不变
+      o.bindMode = "detached";
+      o.bindMatrix.copy(world);
+      o.bindMatrixInverse.copy(world).invert();
+    });
+    if (targets.length) obj.updateMatrixWorld(true);
+  }
+
   /* ---------- 全彩平滑法线（1.2.9）----------
    * STL/PLY（及部分 OBJ）是"三角汤"：顶点不共享、法线逐面平坦 → 全彩渲染出块状棱角。
    * needsSmoothing：抽样比较同位置顶点的法线，夹角 > ~20° 判定为平坦着色；
@@ -566,8 +594,13 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     }).catch(fail);
   }
 
-  /* ---------- OBJ + MTL（1.2.2: 全彩模式需要原材质/贴图） ---------- */
+  /* ---------- OBJ + MTL（1.2.2: 全彩模式需要原材质/贴图） ----------
+   * 1.3.5.2: 注册 TGA/DDS 解码器 —— Digimon Masters 等游戏包的贴图是 .tga/.dds，
+   * 浏览器原生不解这两种格式，没有解码器时全彩模式贴图全部加载失败。 */
   function tryOBJMaterials(url, cb) {
+    var manager = new THREE.LoadingManager();
+    manager.addHandler(/\.tga$/i, new TGALoader());
+    manager.addHandler(/\.dds$/i, new DDSLoader());
     fetch(url).then(function (r) { return r.ok ? r.text() : null; }).then(function (text) {
       if (!text) { cb(null); return; }
       var m = text.match(/^\s*mtllib\s+(.+)$/m);
@@ -575,7 +608,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       var mtlName = m[1].trim().replace(/^"+|"+$/g, "");
       var dir = url.substring(0, url.lastIndexOf("/") + 1);
       var mtlUrl = dir + encodeURI(mtlName).replace(/#/g, "%23").replace(/\?/g, "%3F");
-      new MTLLoader().load(mtlUrl, function (mats) { mats.preload(); cb(mats); }, undefined, function () { cb(null); });
+      new MTLLoader(manager).load(mtlUrl, function (mats) { mats.preload(); cb(mats); }, undefined, function () { cb(null); });
     }).catch(function () { cb(null); });
   }
 
@@ -619,8 +652,10 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       }
       if (!srcMeshes.length) { showError("文件中未找到网格数据"); return; }
       setFullObject(object3DorGeom.isBufferGeometry ? object3DorGeom : object3DorGeom);
+      stabilizeSkinnedMeshes(object3DorGeom);   // 1.3.5.2: 挂在骨骼下的蒙皮网格摘挂（防全彩塌陷）
       var res = buildWireframe();
       normalizeModel();
+      applyRender();                            // 1.3.5.2: 载入即套用当前渲染方式（修复首载线框/全彩两层同显）
       setupAnimations(object3DorGeom.isBufferGeometry ? null : object3DorGeom, anims || [], kind);
       // 1.3.5: 骨架 —— 纯几何（STL/OBJ/PLY）传 null，面板会显示「无骨骼」提示
       setupSkeleton(object3DorGeom.isBufferGeometry ? null : object3DorGeom);
@@ -1394,6 +1429,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
 
   /* 自检钩子（1.3.5）：只读暴露骨架/姿态/关键帧状态，供黑盒验证脚本取证。
    * 不参与任何业务逻辑，删掉也不影响功能。 */
+  window.holoRoot = function () { return modelRoot; }; // 调试取证：只读返回模型根节点（勿修改其内容）
   window.holoSkelDiag = function () {
     var out = { hasSkel: false };
     if (!skelVis) return out;

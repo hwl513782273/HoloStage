@@ -634,11 +634,23 @@ extension AppDelegate: WKNavigationDelegate {
         if let p = ProcessInfo.processInfo.environment["HOLO_MODEL"] {
             loadModel(at: URL(fileURLWithPath: p))
         }
+        // 调试钩子（1.3.5.1）：HOLO_JS=任意 JS → 载入后 1s 在页面里执行，结果打印到 stdout。
+        // 只用于黑盒取证（如切渲染模式），不参与业务逻辑，删掉不影响功能。
+        if let js = ProcessInfo.processInfo.environment["HOLO_JS"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.webView.evaluateJavaScript(js) { res, err in
+                    if let err { print("[HOLO-JS] ERR \(err)") }
+                    else { print("[HOLO-JS] \(res as? String ?? "ok")") }
+                }
+            }
+        }
         // 1.3.3 整窗快照自检：拍一张落到 /tmp/holo_snap_selftest.png，打印尺寸后退出。
         // 用「非黑像素分区占比」判定 DOM 面板与 WebGL 画面是否真的被拍进去。
+        // 快照延时可用 HOLO_SNAP_DELAY 覆盖（默认 3s；配 HOLO_JS 切模式时留足余量）
         if let sc = ProcessInfo.processInfo.environment["SNAP_SELFTEST"] {
             let scale = Double(sc) ?? 2.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            let snapDelay = ProcessInfo.processInfo.environment["HOLO_SNAP_DELAY"].flatMap(Double.init) ?? 3.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + snapDelay) { [weak self] in
                 guard let self else { return }
                 self.makeSnapshot(scale: scale) { url in
                     guard let url, let data = FileManager.default.contents(atPath: url.path) else {
