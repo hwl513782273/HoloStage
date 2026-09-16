@@ -657,6 +657,21 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     else enc = encodeURI("file://" + url).replace(/#/g, "%23").replace(/\?/g, "%3F");
     function done(object3DorGeom, anims) {
       state.lastLoad = { url: url, name: name }; // 1.2.9: 平滑法线开关切换时重载用
+      // 1.3.5.5(b28): 隐藏 ripping 包自带的描边壳网格。游戏内描边靠引擎参数
+      // （背面外扩 + 正面剔除）只露边缘一条线；ripping 把壳一并导出后，
+      // 通用渲染下它是一层罩在本体上的实心壳（chr347_e_outline 实测：黄壳+三角纹叠加）。
+      // 判定：网格名或材质名含 outline。隐藏后不进线框/归一化统计，骨骼动画不受影响。
+      if (!object3DorGeom.isBufferGeometry) {
+        object3DorGeom.traverse(function (o) {
+          if (!o.isMesh && !o.isSkinnedMesh) return;
+          var matName = (Array.isArray(o.material) ? o.material[0] : o.material);
+          matName = (matName && matName.name) || "";
+          if (/outline/i.test(o.name || "") || /outline/i.test(matName)) {
+            o.visible = false;
+            o.userData.holoOutline = true;
+          }
+        });
+      }
       // 1.2.9: 全彩平滑法线（三角汤检测 + 按位置合并顶点重算）
       if (state.smoothNormals) {
         if (object3DorGeom.isBufferGeometry) object3DorGeom = smoothPass(object3DorGeom);
@@ -668,7 +683,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       } else {
         object3DorGeom.updateMatrixWorld(true);
         object3DorGeom.traverse(function (o) {
-          if (o.isMesh && o.geometry) {
+          if ((o.isMesh || o.isSkinnedMesh) && o.geometry && !(o.userData && o.userData.holoOutline)) {
             srcMeshes.push({ geometry: o.geometry, matrix: o.matrixWorld.clone() });
           }
         });

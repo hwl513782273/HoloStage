@@ -577,18 +577,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         return out
     }
 
-    /// 在解压目录中挑主模型：扩展名优先级 → 文件体积大者优先
+    /// 在解压目录中挑主模型：扩展名优先级 → 本名优先（降 `_eNN` 变体）→ 文件体积大者优先
+    /// 1.3.5.5(b28)：ReArise 等游戏包里 chrNNN_eNN.fbx 是「水晶化异色变体」，
+    /// 内含描边壳网格且体积总比本体大 —— 旧规则纯按体积挑必然选中变体，
+    /// 全彩模式出现「绿晶纹 + 黄壳叠加」。同类名多文件时优先选不带 _eNN 后缀的本名模型。
     private func pickMainModel(in root: URL) -> URL? {
         let candidates = findFiles(in: root, exts: Array(Self.modelExts.keys), skipDirs: true)
         guard !candidates.isEmpty else { return nil }
         let fm = FileManager.default
-        let ranked = candidates.map { url -> (URL, Int, Int) in
+        let ranked = candidates.map { url -> (URL, Int, Int, Int) in
             let pri = Self.modelExts[url.pathExtension.lowercased()] ?? 99
+            let base = url.deletingPathExtension().lastPathComponent.lowercased()
+            let isVariant = base.range(of: "_e[0-9]+$", options: .regularExpression) != nil ? 1 : 0
             let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-            return (url, pri, size)
+            return (url, pri, isVariant, size)
         }.sorted { a, b in
             if a.1 != b.1 { return a.1 < b.1 }
-            if a.2 != b.2 { return a.2 > b.2 }
+            if a.2 != b.2 { return a.2 < b.2 }
+            if a.3 != b.3 { return a.3 > b.3 }
             return a.0.path < b.0.path
         }
         return ranked.first?.0
