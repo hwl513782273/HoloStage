@@ -93,6 +93,10 @@
   }
   #panel.hidden { transform: translateX(100%); }
   #panel h2 { font-size: 12px; letter-spacing: 0.3em; margin: 14px 0 8px; color: var(--ui-dim); border-bottom: 1px solid var(--ui-line); padding-bottom: 4px; }
+  /* 1.3.5.6(b29): 分节折叠 —— h2 可点击，默认全部折叠 */
+  #panel h2 { cursor: pointer; user-select: none; }
+  #panel h2::before { content: "▾"; display: inline-block; width: 1em; margin-right: 0.3em; transition: transform .15s; }
+  #panel h2.secCollapsed::before { transform: rotate(-90deg); }
   #panel h2:first-child { margin-top: 0; }
   .row { display: flex; align-items: center; justify-content: space-between; margin: 9px 0; font-size: 12px; }
   .row label { color: var(--ui-dim); }
@@ -264,8 +268,8 @@
       <button id="btnPlay">暂停</button>
       <div class="row"><label>进度</label><span id="valAProg">0%</span></div>
       <input type="range" id="inpAProg" min="0" max="1000" value="0" style="width:100%">
-      <div class="row"><label>速度</label><span id="valASpeed">1.0</span></div>
-      <input type="range" id="inpASpeed" min="10" max="300" value="100" style="width:100%">
+      <div class="row"><label>速度</label><span id="valASpeed">0.0</span></div>
+      <input type="range" id="inpASpeed" min="0" max="300" value="0" style="width:100%">
       <div class="row"><label>循环模式</label><span id="valLoop">循环</span></div>
       <button id="btnLoop">切换 循环/单次/往返</button>
       <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">动画在「全彩（原材质）」模式下可见；线框为静态快照</div>
@@ -281,9 +285,9 @@
     </div>
 
     <h2>场景</h2>
-    <div class="row"><label>转速</label><span id="valSpeed">0.5</span></div>
-    <input type="range" id="inpSpeed" min="0" max="20" value="5" style="width:100%">
-    <div class="row"><label>悬浮呼吸</label><input type="checkbox" id="inpBob" checked></div>
+    <div class="row"><label>转速</label><span id="valSpeed">0.0</span></div>
+    <input type="range" id="inpSpeed" min="0" max="20" value="0" style="width:100%">
+    <div class="row"><label>悬浮呼吸</label><input type="checkbox" id="inpBob"></div>
     <div class="row"><label>呼吸幅度</label><span id="valBobAmp">1.0</span></div>
     <input type="range" id="inpBobAmp" min="10" max="300" value="100" style="width:100%">
     <div class="row"><label>鼠标视差</label><input type="checkbox" id="inpParallax"></div>
@@ -298,7 +302,7 @@
     <h2>骨骼 / 姿态</h2>
     <div id="skelNone" style="font-size:11px;color:var(--ui-dim);margin:4px 0;">当前模型无骨骼数据（STL / OBJ / PLY 这类纯几何模型没有骨架）</div>
     <div id="skelUI" style="display:none">
-      <div class="row"><label>显示骨架</label><input type="checkbox" id="inpSkel" checked></div>
+      <div class="row"><label>显示骨架</label><input type="checkbox" id="inpSkel"></div>
       <div class="row"><label>姿势模式</label><input type="checkbox" id="inpSkelEdit"></div>
       <div style="font-size:10px;color:var(--ui-dim);margin-bottom:4px;">开启后可点选骨骼并拖动旋转；线框是静态快照，看模型变形请切「全彩（原材质）」</div>
       <div id="skelInfo" style="font-size:11px;color:var(--ui-dim);margin:4px 0;"></div>
@@ -336,13 +340,13 @@
 
     <h2>环模式</h2>
     <select id="selRingMode">
-      <option value="free" selected>自由变换（1.2+）</option>
-      <option value="classic">经典 1.0（绕中点平转）</option>
+      <option value="free">自由变换（1.2+）</option>
+      <option value="classic" selected>经典 1.0（绕中点平转）</option>
     </select>
     <div class="row" style="margin-top:6px;"><label>环心（经典模式）</label></div>
     <select id="selRingAnchor">
-      <option value="model" selected>模型中点（跟随模型）</option>
-      <option value="world">世界中心（1.2.7 行为）</option>
+      <option value="model">模型中点（跟随模型）</option>
+      <option value="world" selected>世界中心（1.2.7 行为）</option>
     </select>
     <div class="row" style="margin-top:6px;"><label>隐藏环中心点</label><input type="checkbox" id="inpHideDot"></div>
     <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">隐藏刻度盘/魔法阵样式中央的圆点（自由与经典模式均生效）</div>

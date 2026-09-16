@@ -351,11 +351,11 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   var modelBaseY = 0; // 1.2.4: 悬浮呼吸的基准高度（normalizeModel 后记录）
   var modelMidY = 0.85; // 1.2.8: 模型包围盒竖直中点（经典模式"模型中点"环心）
   var state = {
-    speed: 0.5, mode: "wire", angle: 32, scale: 1.0, zup: false,
+    speed: 0, mode: "wire", angle: 32, scale: 1.0, zup: false, // 1.3.5.6(b29): 场景转速默认 0
     render: "wire",                     // 1.2.2: wire | full
     atmo: true,                         // 1.2.2: 全彩氛围（辉光+雾）
     smoothNormals: true, lastLoad: null, // 1.2.9: 全彩平滑法线（切换时重载模型生效）
-    bobOn: true, bobAmp: 1.0,           // 1.2.4: 悬浮呼吸
+    bobOn: false, bobAmp: 1.0,          // 1.2.4: 悬浮呼吸（b29 默认关）
     parallaxOn: false,                  // 1.2.4: 鼠标视差
     pulseOn: false,                     // 1.2.4: 辉光脉冲
     swayOn: false, swayAmp: 1.0,        // 1.2.10: 待机摆动（轻微摇摆/倾斜）
@@ -370,8 +370,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     sizeLimitMB: 0,                      // 1.3.3: GIF 目标体积上限（0 = 不限）
     pos: { x: 0, y: 0, z: 0 },          // 模型位移（世界单位）
     delay: 100,                          // GIF 每帧延时 ms
-    ringMode: "free",                    // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）
-    ringAnchor: "model",                 // 1.2.8: 经典模式环心 model=模型中点（跟随模型）| world=世界中心
+    ringMode: "classic",                 // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）；b29 默认经典
+    ringAnchor: "world",                 // 1.2.8: 经典模式环心 model=模型中点（跟随模型）| world=世界中心；b29 默认世界中心（1.2.7 行为）
     rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5；z/zu 见 1.3.2；text=数据弧文字 1.3.5）
       { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "seg",  text: DATA_TEXT },
       { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "dial", text: DATA_TEXT },
@@ -1031,8 +1031,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       sel.appendChild(op);
     });
     sel.onchange = function () { playAnimClip(+this.value); };
-    anim.paused = false; anim.speed = 1; anim.loop = "repeat";
-    $("inpASpeed").value = 100; $("valASpeed").textContent = "1.0";
+    anim.paused = false; anim.speed = 0; anim.loop = "repeat"; // 1.3.5.6(b29): 动作速度默认 0（静止，拖速度条或播放后才会动）
+    $("inpASpeed").value = 0; $("valASpeed").textContent = "0.0";
+    if (mixer) mixer.timeScale = 0;
     $("inpAProg").value = 0; $("valAProg").textContent = "0%";
     $("valLoop").textContent = "循环";
     $("btnPlay").textContent = "暂停";
@@ -1929,8 +1930,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   });
   // 场景组重置（1.2.5）
   $("btnSceneReset").onclick = function () {
-    state.speed = 0.5; $("inpSpeed").value = 5; $("valSpeed").textContent = "0.5";
-    state.bobOn = true; $("inpBob").checked = true;
+    state.speed = 0; $("inpSpeed").value = 0; $("valSpeed").textContent = "0.0"; // b29: 转速默认 0
+    state.bobOn = false; $("inpBob").checked = false; // b29: 呼吸默认关
     state.bobAmp = 1.0; $("inpBobAmp").value = 100; $("valBobAmp").textContent = "1.0";
     state.parallaxOn = false; $("inpParallax").checked = false; modelRoot.rotation.z = 0;
     state.swayOn = false; $("inpSway").checked = false;
@@ -2483,6 +2484,33 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   /* ---------- 尺寸与主循环 ---------- */
   window.addEventListener("resize", resize);
   resize();
+  /* ---------- 面板分节折叠（1.3.5.6 b29）----------
+   * 每个 h2 大部分可点击折叠/展开，默认全部折叠（只显示分节标题）。
+   * 实现：把 h2 后面到下一个 h2 之前的兄弟元素包进 .secBody 容器，
+   * 元素 id 不变，app.module.js 其余按 id 取节点的逻辑不受影响。 */
+  (function initSectionCollapse() {
+    var panel = $("panel");
+    if (!panel) return;
+    var kids = Array.prototype.slice.call(panel.children);
+    var groups = [], cur = null;
+    kids.forEach(function (el) {
+      if (el.tagName === "H2") { cur = { h2: el, body: [] }; groups.push(cur); }
+      else if (cur) cur.body.push(el);
+    });
+    groups.forEach(function (g) {
+      var wrap = document.createElement("div");
+      wrap.className = "secBody";
+      g.body.forEach(function (el) { wrap.appendChild(el); }); // appendChild 自动从原位置摘下
+      panel.insertBefore(wrap, g.h2.nextSibling);
+      g.h2.classList.add("secCollapsed");
+      wrap.style.display = "none"; // b29: 默认折叠
+      g.h2.onclick = function () {
+        var open = wrap.style.display !== "none";
+        wrap.style.display = open ? "none" : "";
+        g.h2.classList.toggle("secCollapsed", open);
+      };
+    });
+  })();
   rebuildRing3D(); // 1.2.7: 首次构建 3D 全息环（默认经典模式关闭时不可见，切换即用）
 
   var last = performance.now();
