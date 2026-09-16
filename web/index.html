@@ -263,13 +263,14 @@
     <h2>动画</h2>
     <div id="animHint" style="font-size:11px;color:var(--ui-dim);margin:4px 0;">当前模型无动画数据</div>
     <div id="animUI" style="display:none">
+      <div class="row"><label>关闭动画</label><input type="checkbox" id="inpAnimOff"></div>
       <div class="row"><label>动作片段</label><span id="valClip">1/1</span></div>
       <select id="selClip"></select>
       <button id="btnPlay">暂停</button>
       <div class="row"><label>进度</label><span id="valAProg">0%</span></div>
       <input type="range" id="inpAProg" min="0" max="1000" value="0" style="width:100%">
-      <div class="row"><label>速度</label><span id="valASpeed">0.0</span></div>
-      <input type="range" id="inpASpeed" min="0" max="300" value="0" style="width:100%">
+      <div class="row"><label>速度</label><span id="valASpeed">0.1</span></div>
+      <input type="range" id="inpASpeed" min="0" max="300" value="10" style="width:100%">
       <div class="row"><label>循环模式</label><span id="valLoop">循环</span></div>
       <button id="btnLoop">切换 循环/单次/往返</button>
       <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">动画在「全彩（原材质）」模式下可见；线框为静态快照</div>
@@ -348,7 +349,7 @@
       <option value="model">模型中点（跟随模型）</option>
       <option value="world" selected>世界中心（1.2.7 行为）</option>
     </select>
-    <div class="row" style="margin-top:6px;"><label>隐藏环中心点</label><input type="checkbox" id="inpHideDot"></div>
+    <div class="row" style="margin-top:6px;"><label>隐藏环中心点</label><input type="checkbox" id="inpHideDot" checked></div>
     <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">隐藏刻度盘/魔法阵样式中央的圆点（自由与经典模式均生效）</div>
     <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">经典模式：环在 3D 场景内随视角透视；环心可选跟随模型中点或世界中心；各环三轴位移（X/Y/Z）、大小缩放、俯仰/偏航/滚转、Z 轴朝上全部生效</div>
     <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">位置 Z 为深度方向（正=朝观察者）；勾选「Z 轴朝上」环面由竖直转为水平躺平</div>

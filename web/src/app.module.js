@@ -359,7 +359,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     parallaxOn: false,                  // 1.2.4: 鼠标视差
     pulseOn: false,                     // 1.2.4: 辉光脉冲
     swayOn: false, swayAmp: 1.0,        // 1.2.10: 待机摆动（轻微摇摆/倾斜）
-    hideCenterDot: false,               // 1.2.10: 隐藏刻度盘/魔法阵中央圆点
+    hideCenterDot: true,                // 1.2.10: 隐藏刻度盘/魔法阵中央圆点（b31 默认改隐藏）
     customColor: null,                  // 1.2.10: 自定义配色 #rrggbb（存入 PRESETS.custom）
     physOn: false, physGravity: 1.0, physStrength: 1.0, // 1.3.0: ammo.js 物理（PMX/PMD）
     vmdUrl: "", vmdName: "",            // 1.3.0: 拖入的 VMD 动作文件
@@ -1042,7 +1042,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
 
   /* ---------- 骨骼动画播放（1.2.4：GLB/glTF/FBX 自带动画） ---------- */
   var mixer = null, animClips = [], animAction = null, animClipIdx = 0;
-  var anim = { paused: false, speed: 1, loop: "repeat", scrubbing: false };
+  var anim = { paused: false, speed: 1, loop: "repeat", scrubbing: false, off: false }; // b31: off=关闭动画
   /** 按 animClips 刷新动画面板（普通模型与 PMX 共用） */
   function refreshAnimUI() {
     var ui = $("animUI"), hint = $("animHint"), mmd = $("mmdUI");
@@ -1067,14 +1067,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       sel.appendChild(op);
     });
     sel.onchange = function () { playAnimClip(+this.value); };
-    anim.paused = false; anim.speed = 0; anim.loop = "repeat"; // 1.3.5.6(b29): 动作速度默认 0（静止，拖速度条或播放后才会动）
-    $("inpASpeed").value = 0; $("valASpeed").textContent = "0.0";
-    if (mixer) mixer.timeScale = 0;
+    anim.paused = false; anim.speed = 0.1; anim.loop = "repeat"; // 1.3.5.8(b31): 动作速度默认 0.1（b29 的 0 改回微速）；关闭动画勾选时由 applyAnimOff 停掉
+    $("inpASpeed").value = 10; $("valASpeed").textContent = "0.1";
+    if (mixer) mixer.timeScale = 0.1;
     $("inpAProg").value = 0; $("valAProg").textContent = "0%";
     $("valLoop").textContent = "循环";
     $("btnPlay").textContent = "暂停";
     ui.style.display = ""; hint.style.display = "none";
     playAnimClip(0);
+    applyAnimOff(); // b31: 关闭动画若处于勾选状态，重载后保持停用
   }
   var LOOP_MODES = [
     ["repeat", "循环", THREE.LoopRepeat],
@@ -1266,7 +1267,27 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     animAction = a;
     $("valClip").textContent = (idx + 1) + "/" + animClips.length;
   }
+  /* b31: 关闭动画 —— 完全停用骨骼动画并回到初始绑定姿态。
+   * mixer.stopAllAction() 会把各 PropertyBinding 恢复到动作启用前的保存值（= 绑定姿态），
+   * PMX 也走同一条路（rebuildMMD 里 mixer 取自 helper 内部），所以一条实现两路通吃；
+   * timeScale 同时清零，防止残留 update 推进。 */
+  function applyAnimOff() {
+    if (!mixer) return;
+    if (anim.off) {
+      mixer.stopAllAction();
+      mixer.timeScale = 0;
+      animAction = null;
+      anim.paused = true; $("btnPlay").textContent = "播放";
+      $("inpAProg").value = 0; $("valAProg").textContent = "0%";
+    } else {
+      anim.paused = false; $("btnPlay").textContent = "暂停"; // b31: 恢复时清掉关闭期间置的暂停态
+      mixer.timeScale = anim.speed;
+      playAnimClip(animClipIdx);
+    }
+  }
+  $("inpAnimOff").onchange = function () { anim.off = this.checked; applyAnimOff(); };
   $("btnPlay").onclick = function () {
+    if (anim.off) return; // b31: 动画已整体关闭时，播放/暂停不生效
     anim.paused = !anim.paused;
     this.textContent = anim.paused ? "播放" : "暂停";
     if (animAction) animAction.paused = anim.paused;
@@ -1827,6 +1848,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   };
   ensureAmmo(); // 启动即预热，PMX 载入时通常已就绪
   // 隐藏环中心点（1.2.10）：刻度盘/魔法阵中央圆点，自由(SVG)+经典(3D)均生效
+  $("inpHideDot").checked = state.hideCenterDot; // b31: 默认勾选（state 默认 true），UI 与初始画面一致
   $("inpHideDot").onchange = function () {
     state.hideCenterDot = this.checked;
     ringWraps.forEach(function (wrap, i) {
