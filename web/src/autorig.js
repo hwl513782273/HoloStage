@@ -1,13 +1,16 @@
-/* HoloStage 1.3.5.9(b32) — 本地自动绑骨（Mixamo 式拖标记）
+/* HoloStage 1.3.5.10(b33) — 本地自动绑骨（Mixamo 式分步拖标记）
  *
- * 流程：无骨骼模型载入后点「自动绑骨」→ 舞台出现标记覆盖层（9 个彩色圆环，
- *       按包围盒自动预放，可拖到正确关节；利用对称时右半边自动镜像左半边）
- *       → NEXT：按标记生成人形骨架 + 顶点到骨段距离反比蒙皮 → 替换原静态网格
- *       → 现有「骨骼 / 姿态」系统（点选拖动 / 三轴 / 关键帧）直接接管。
+ * b33 按用户 Mixamo 截图重做交互：
+ *   ① 纯净视口 —— 进入绑骨时临时隐藏全息装饰（动态背景/网格/呼吸/HUD/右侧面板），
+ *      scene.background 换浅灰，另加一层中性地面网格；退出时全部还原。
+ *   ② 自动取景 —— 按模型包围盒把相机移到正面平视、模型占屏 ~75%。
+ *   ③ 可旋转缩放 —— 覆盖层通透（pointer-events:none，只有标记/按钮接事件），
+ *      stageEl 既有 orbit（左键旋转/滚轮缩放/右键复位）直接可用。
+ *   ④ 分步向导 —— Mixamo 五步：下巴 → 手腕 → 手肘 → 膝盖 → 裆部；每步只显示
+ *      当前标记（脉动）与已完成标记（变暗），顶部一句话提示。
  *
- * 坐标系约定：标记与关节全部存 modelRoot 局部空间（模型已归一化居中，x 镜像即左右对称）。
- * 骨架挂在 fullGroup 下的一个 Bone 根上；蒙皮用 attached 模式（父链是静态组节点，
- * normalizeModel 的根缩放会被 bindMatrixInverse 的逐帧重算自动抵消，无需手动 rebind）。
+ * 生成骨架/蒙皮逻辑与 b32 相同：标记与关节全部存 modelRoot 局部空间；
+ * 骨架挂 fullGroup 下 Bone 根；蒙皮 attached 模式（父链是静态组节点）。
  *
  * 本模块不依赖 app.module 内部状态，全部经 ctx 注入：
  *   { camera, container, group(fullGroup), root(modelRoot), onBuilt(summary), onMsg(text) }
@@ -17,27 +20,41 @@ import * as THREE from "three";
 
 var ctx = null, active = false, built = false;
 var arMeshes = [];             // 本模块创建的蒙皮网格 + 骨根（resetRig 时统一摘除）
-var markers = [];              // {key,label,color,pos,mirror,el}
-var wrapEl = null, dotsEl = null, dragEl = null, listEl = null;
-var dragMk = null, hoverMk = null;
+var markers = [];              // {key,label,color,pos,el}
+var wrapEl = null, dotsEl = null;
+var dragMk = null;
 var _ray = new THREE.Raycaster();
 var _ndc = new THREE.Vector2();
 var _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 var _plane = new THREE.Plane();
 var _m4 = new THREE.Matrix4();
-var savedRender = null;        // 进覆盖层前记住渲染方式，BACK 时还原
+var savedRender = null;        // 进覆盖层前记住渲染方式，退出时还原
 var rafId = 0;
 
-/* 标记定义（颜色照搬 Mixamo Auto-Rigger 截图）：mirror 指向 x 镜像伙伴 */
+/* 纯净视口（b33）：临时摘掉的舞台装饰与还原信息 */
+var clean = null;              // { toggles:[{el,checked}], panelDisp, scene, bg, grid }
+var gridHelper = null;
+var step = 0;
+
+/* 标记定义（颜色照搬 Mixamo Auto-Rigger 截图） */
 var MARKER_DEFS = [
-  { key: "chin",   label: "CHIN 下巴",   color: "#35d6e0", mirror: null,      tip: "下颌尖" },
-  { key: "wristR", label: "WRISTS 手腕", color: "#b5e352", mirror: "wristL",  tip: "右腕" },
-  { key: "wristL", label: null,          color: "#b5e352", mirror: "wristR",  tip: "左腕（对称自动）" },
-  { key: "elbowR", label: "ELBOWS 手肘", color: "#f0d24a", mirror: "elbowL",  tip: "右肘" },
-  { key: "elbowL", label: null,          color: "#f0d24a", mirror: "elbowR",  tip: "左肘（对称自动）" },
-  { key: "kneeR",  label: "KNEES 膝盖",  color: "#f5a623", mirror: "kneeL",   tip: "右膝" },
-  { key: "kneeL",  label: null,          color: "#f5a623", mirror: "kneeR",   tip: "左膝（对称自动）" },
-  { key: "groin",  label: "GROIN 裆部",  color: "#f06292", mirror: null,      tip: "骨盆底" }
+  { key: "chin",   label: "下巴 CHIN",   color: "#35d6e0", tip: "下颌尖" },
+  { key: "wristR", label: "手腕 WRISTS", color: "#b5e352", tip: "右腕" },
+  { key: "wristL", label: null,          color: "#b5e352", tip: "左腕（对称自动）" },
+  { key: "elbowR", label: "手肘 ELBOWS", color: "#f0d24a", tip: "右肘" },
+  { key: "elbowL", label: null,          color: "#f0d24a", tip: "左肘（对称自动）" },
+  { key: "kneeR",  label: "膝盖 KNEES",  color: "#f5a623", tip: "右膝" },
+  { key: "kneeL",  label: null,          color: "#f5a623", tip: "左膝（对称自动）" },
+  { key: "groin",  label: "裆部 GROIN",  color: "#f06292", tip: "骨盆底" }
+];
+
+/* Mixamo 五步向导：每步放一组标记 */
+var STEPS = [
+  { keys: ["chin"],            text: "把青色圆环拖到下颌尖（头部下方）" },
+  { keys: ["wristR", "wristL"], text: "把黄绿圆环拖到左右手腕 — 勾选「利用对称」只需拖右侧" },
+  { keys: ["elbowR", "elbowL"], text: "把黄色圆环拖到左右手肘" },
+  { keys: ["kneeR", "kneeL"],  text: "把橙色圆环拖到左右膝盖" },
+  { keys: ["groin"],           text: "把粉色圆环拖到骨盆底（两腿之间）" }
 ];
 
 function $(id) { return document.getElementById(id); }
@@ -86,80 +103,146 @@ function autoPlace(box) {
   set("kneeL",  -W * 0.10, min.y + 0.25 * H, 0);
 }
 
+/* ---------- 纯净视口（b33） ---------- */
+function getScene() {
+  if (ctx && ctx.root && ctx.root.parent) return ctx.root.parent;
+  if (window.holoRoot) { var r = window.holoRoot(); if (r && r.parent) return r.parent; }
+  return null;
+}
+function enterClean() {
+  clean = { toggles: [], panelDisp: "", scene: null, bg: null, grid: null };
+  ["inpBg", "inpGrid", "inpBob", "inpHud", "inpAtmo"].forEach(function (id) {
+    // inpAtmo（全彩氛围）关掉 = bloom.strength 0 —— threshold=0 的全屏泛光在浅背景下会把模型洗白
+    var e = $(id); if (!e) return;
+    clean.toggles.push({ el: e, checked: e.checked });
+    if (e.checked) { e.checked = false; e.dispatchEvent(new Event("change")); }
+  });
+  var panel = $("panel");
+  if (panel) { clean.panelDisp = panel.style.display; panel.style.display = "none"; }
+  var scene = getScene();
+  if (scene) {
+    clean.scene = scene;
+    clean.bg = scene.background;
+    scene.background = new THREE.Color(0xd7dade); // Mixamo 浅灰
+    var meshes = targetMeshes();
+    var box = localBBox(meshes);
+    ctx.root.updateMatrixWorld(true);
+    var wb = box.clone().applyMatrix4(ctx.root.matrixWorld);
+    var size = wb.getSize(new THREE.Vector3());
+    var span = Math.max(size.x, size.y, size.z) * 3 || 6;
+    gridHelper = new THREE.GridHelper(span, 12, 0xb9bfc7, 0xd3d7dc);
+    gridHelper.position.y = wb.min.y;
+    gridHelper.userData.holoARGrid = true; // 自检/清理时与 App 自带网格区分
+    scene.add(gridHelper);
+    clean.grid = gridHelper;
+  }
+}
+function exitClean() {
+  if (!clean) return;
+  if (clean.grid) { clean.scene.remove(clean.grid); clean.grid.geometry.dispose(); clean.grid.material.dispose(); }
+  gridHelper = null;
+  if (clean.scene) clean.scene.background = clean.bg;
+  var panel = $("panel");
+  if (panel) panel.style.display = clean.panelDisp;
+  clean.toggles.forEach(function (t) {
+    if (t.checked) { t.el.checked = true; t.el.dispatchEvent(new Event("change")); }
+  });
+  clean = null;
+}
+
+/* ---------- 自动取景（b33）：正面平视、模型占屏 ~75% ---------- */
+function fitCamera() {
+  var meshes = targetMeshes();
+  if (!meshes.length) return;
+  var box = localBBox(meshes);
+  ctx.root.updateMatrixWorld(true);
+  var wb = box.clone().applyMatrix4(ctx.root.matrixWorld);
+  var c = wb.getCenter(new THREE.Vector3());
+  var size = wb.getSize(new THREE.Vector3());
+  var cam = ctx.camera;
+  var r = ctx.container.getBoundingClientRect();
+  var aspect = (r.width || 1) / (r.height || 1);
+  var fov = (cam.fov || 45) * Math.PI / 180;
+  var distV = (size.y * 0.5 * 1.32) / Math.tan(fov / 2);
+  var distH = (size.x * 0.5 * 1.32) / (Math.tan(fov / 2) * aspect);
+  var dist = Math.max(distV, distH, size.z * 1.2, 0.5);
+  cam.position.set(c.x, c.y, c.z + dist);
+  cam.lookAt(c.x, c.y, c.z);
+  cam.updateMatrixWorld(true);
+}
+
 /* ---------- DOM ---------- */
 function ensureDom() {
   if (wrapEl) return;
   if (!markers.length) {
     markers = MARKER_DEFS.map(function (d) {
-      return { key: d.key, label: d.label, color: d.color, mirror: d.mirror, tip: d.tip,
+      return { key: d.key, label: d.label, color: d.color, tip: d.tip,
                pos: new THREE.Vector3(), el: null };
     });
   }
   wrapEl = document.createElement("div");
   wrapEl.id = "autoRig";
   wrapEl.innerHTML =
-    '<div id="arHeader">AUTO-RIGGER 自动绑骨<span id="arClose" title="关闭">✕</span></div>' +
-    '<div id="arDrag"></div>' +
-    '<div id="arDots"></div>' +
-    '<div id="arLeft"><div id="arList"></div>' +
-    '  <label class="arRow arSym"><input type="checkbox" id="inpARSym" checked> 利用对称 Use Symmetry</label>' +
-    '  <div class="arRow"><span class="arLbl">骨架 LOD</span>' +
-    '    <select id="selARLOD"><option>Standard Skeleton（标准人形骨架）</option></select></div>' +
-    '  <div class="arBtns"><button id="btnARBack">BACK 返回</button><button id="btnARNext">NEXT 生成骨架</button></div>' +
+    '<div id="arHeader">' +
+    '  <span id="arStepNo"></span>' +
+    '  <span id="arStepName"></span>' +
+    '  <span id="arClose" title="退出绑骨">✕</span>' +
     '</div>' +
-    '<div id="arRight"><b>Place markers 位置标记</b>' +
-    '  <p>在模型上把彩色圆环拖到对应关节，然后点「NEXT 生成骨架」开始自动绑定。</p>' +
-    '  <p class="arDim">标记已按体型比例自动预放，多数模型只需微调（甚至直接 NEXT）。</p>' +
-    '  <p class="arDim">拖不准的一面开启「利用对称」：只拖右侧，左侧自动镜像。</p>' +
-    '  <p class="arDim">生成的骨架接入「骨骼 / 姿态」面板：点选拖动 / 三轴微调 / 打关键帧。</p>' +
-    '</div>';
+    '<div id="arGuide"></div>' +
+    '<div id="arDots"></div>' +
+    '<div id="arBottom">' +
+    '  <button id="btnARBack">‹ 上一步</button>' +
+    '  <label id="arSymWrap"><input type="checkbox" id="inpARSym" checked> 利用对称</label>' +
+    '  <button id="btnARNext">下一步 ›</button>' +
+    '</div>' +
+    '<div id="arTools"><button id="btnARFit" title="重新取景">⌖ 取景</button></div>' +
+    '<div id="arHint">左键拖动旋转 · 滚轮缩放 · 右键复位视角</div>';
   ctx.container.appendChild(wrapEl);
-  dotsEl = $("arDots"); dragEl = $("arDrag"); listEl = $("arList");
+  dotsEl = $("arDots");
+  // 覆盖层内的按下事件不许冒泡到 stageEl（orbit 绑在那里，否则拖标记会带着相机转）
+  ["mousedown", "pointerdown", "wheel"].forEach(function (evt) {
+    wrapEl.addEventListener(evt, function (e) { e.stopPropagation(); });
+  });
 
   markers.forEach(function (mk0) {
     var d = document.createElement("div");
     d.className = "arDot";
     d.style.borderColor = mk0.color;
-    d.dataset.key = mk0.key;
+    d.title = mk0.tip;
     dotsEl.appendChild(d);
     mk0.el = d;
+    d.addEventListener("pointerdown", onDown);
   });
-  buildList();
   $("inpARSym").onchange = function () { /* 状态读取在 drag 中进行 */ };
-  $("btnARBack").onclick = close;
+  $("btnARBack").onclick = function () { if (step > 0) setStep(step - 1); else close(); };
   $("arClose").onclick = close;
-  $("btnARNext").onclick = function () { build(); };
-  dragEl.addEventListener("pointerdown", onDown);
-  dragEl.addEventListener("pointermove", onMove);
-  dragEl.addEventListener("pointerup", onUp);
-  dragEl.addEventListener("pointercancel", onUp);
+  $("btnARNext").onclick = function () { if (step < STEPS.length - 1) setStep(step + 1); else build(); };
+  $("btnARFit").onclick = fitCamera;
 }
 
-function buildList() {
-  var html = "";
+/* ---------- 分步向导 ---------- */
+function setStep(i) {
+  step = i;
+  var keys = STEPS[i].keys;
   markers.forEach(function (mk0) {
-    if (!mk0.label) return; // 镜像伙伴不单列（与 Mixamo 一致：一行两组圆环）
-    html += '<div class="arRow arItem" data-key="' + mk0.key + '">' +
-      '<span class="arChip" style="background:' + mk0.color + '"></span>' +
-      '<span class="arLbl">' + mk0.label + "</span>" +
-      '<span class="arTip">' + mk0.tip + "</span></div>";
+    var el = mk0.el;
+    el.classList.remove("cur", "done", "off");
+    if (keys.indexOf(mk0.key) >= 0) el.classList.add("cur");
+    else {
+      // 已完成步的标记保留显示（变暗缩小），未到的隐藏
+      var done = false;
+      for (var s = 0; s < i; s++) if (STEPS[s].keys.indexOf(mk0.key) >= 0) { done = true; break; }
+      el.classList.add(done ? "done" : "off");
+    }
   });
-  listEl.innerHTML = html;
-  Array.prototype.forEach.call(listEl.querySelectorAll(".arItem"), function (row) {
-    row.onclick = function () { selectMarker(this.dataset.key); };
-  });
-}
-
-function selectMarker(key) {
-  var mk0 = mk(key);
-  if (mk0 && !mk0.label && mk0.mirror) key = mk0.mirror; // 镜像伙伴归到主标记（列表行对应主标记）
-  markers.forEach(function (m2) {
-    var on = m2.key === key || (m2.mirror === key);
-    m2.el.classList.toggle("sel", on);
-  });
-  Array.prototype.forEach.call(listEl.querySelectorAll(".arItem"), function (row) {
-    row.classList.toggle("sel", row.dataset.key === key);
-  });
+  $("arStepNo").textContent = "步骤 " + (i + 1) + " / " + STEPS.length;
+  var def = null;
+  markers.forEach(function (mk0) { if (mk0.key === keys[0]) def = mk0; });
+  $("arStepName").textContent = def && def.label ? def.label : "";
+  $("arGuide").textContent = STEPS[i].text;
+  $("btnARNext").textContent = i < STEPS.length - 1 ? "下一步 ›" : "生成骨架 ✓";
+  $("btnARBack").style.visibility = i === 0 ? "hidden" : "";
+  updateDots();
 }
 
 /* ---------- 屏幕投影 ---------- */
@@ -168,6 +251,7 @@ function updateDots() {
   var r = ctx.container.getBoundingClientRect();
   ctx.camera.updateMatrixWorld();
   markers.forEach(function (mk0) {
+    if (mk0.el.classList.contains("off")) return;
     _v.copy(mk0.pos);
     ctx.root.localToWorld(_v);
     _v.project(ctx.camera);
@@ -183,57 +267,48 @@ function loop() {
   rafId = requestAnimationFrame(loop);
 }
 
-/* ---------- 拖拽 ---------- */
+/* ---------- 拖拽（事件直接挂在标记圆环上，舞台保持通透可旋转） ---------- */
 function screenPos(mk0) {
   var r = ctx.container.getBoundingClientRect();
   _v.copy(mk0.pos); ctx.root.localToWorld(_v); _v.project(ctx.camera);
   return { x: (_v.x * 0.5 + 0.5) * r.width, y: (-_v.y * 0.5 + 0.5) * r.height };
 }
 function onDown(e) {
-  var r = ctx.container.getBoundingClientRect();
-  var px = e.clientX - r.left, py = e.clientY - r.top;
-  var best = null, bestD = 34 * 34;
-  markers.forEach(function (mk0) {
-    var s = screenPos(mk0);
-    var dx = s.x - px, dy = s.y - py, d = dx * dx + dy * dy;
-    if (d < bestD) { bestD = d; best = mk0; }
-  });
-  if (!best) return;
-  dragMk = best;
-  selectMarker(best.mirror || best.key); // 选主标记（高亮成对）
-  _v.copy(best.pos); ctx.root.localToWorld(_v);
+  var mk0 = null;
+  markers.forEach(function (m2) { if (m2.el === e.currentTarget) mk0 = m2; });
+  if (!mk0) return;
+  e.preventDefault();
+  dragMk = mk0;
+  mk0.el.setPointerCapture(e.pointerId);
+  _v.copy(mk0.pos); ctx.root.localToWorld(_v);
   ctx.camera.getWorldDirection(_v3);
   _plane.setFromNormalAndCoplanarPoint(_v3, _v);
-  dragEl.setPointerCapture(e.pointerId);
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
 }
 function onMove(e) {
-  if (!dragMk) {
-    var r = ctx.container.getBoundingClientRect();
-    var px = e.clientX - r.left, py = e.clientY - r.top, hov = null, bd = 34 * 34;
-    markers.forEach(function (mk0) {
-      var s = screenPos(mk0), dx = s.x - px, dy = s.y - py, d = dx * dx + dy * dy;
-      if (d < bd) { bd = d; hov = mk0; }
-    });
-    if (hov !== hoverMk) {
-      hoverMk = hov;
-      dragEl.style.cursor = hov ? "grab" : "crosshair";
-    }
-    return;
-  }
-  var r2 = ctx.container.getBoundingClientRect();
-  _ndc.set(((e.clientX - r2.left) / r2.width) * 2 - 1, -((e.clientY - r2.top) / r2.height) * 2 + 1);
+  if (!dragMk) return;
+  var r = ctx.container.getBoundingClientRect();
+  _ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   _ray.setFromCamera(_ndc, ctx.camera);
   if (!_ray.ray.intersectPlane(_plane, _v2)) return;
   ctx.root.worldToLocal(_v2);
   dragMk.pos.copy(_v2);
   var sym = $("inpARSym") ? $("inpARSym").checked : true;
-  if (sym && dragMk.mirror) {
-    var other = mk(dragMk.mirror);
-    if (other) { other.pos.copy(dragMk.pos); other.pos.x = -other.pos.x; }
+  if (sym) {
+    var otherKey = { wristR: "wristL", elbowR: "elbowL", kneeR: "kneeL" }[dragMk.key];
+    if (otherKey) {
+      var other = mk(otherKey);
+      if (other) { other.pos.copy(dragMk.pos); other.pos.x = -other.pos.x; }
+    }
   }
   updateDots();
 }
-function onUp() { dragMk = null; }
+function onUp() {
+  dragMk = null;
+  window.removeEventListener("pointermove", onMove);
+  window.removeEventListener("pointerup", onUp);
+}
 
 /* ---------- 骨架生成 ---------- */
 function segDist(ax, ay, az, bx, by, bz, px, py, pz) {
@@ -330,7 +405,6 @@ function build() {
     var si = new Float32Array(n * 4), sw = new Float32Array(n * 4);
     // 顶点 → root 局部（骨段所在空间）
     _m4.copy(ctx.root.matrixWorld).invert().multiply(mesh.matrixWorld);
-    var segA = new Float32Array(segs.length), segD = new Float32Array(segs.length);
     var v = new THREE.Vector3();
     for (var i = 0; i < n; i++) {
       v.fromBufferAttribute(pa, i).applyMatrix4(_m4);
@@ -398,26 +472,27 @@ function open(c) {
   var meshes = targetMeshes();
   if (!meshes.length) { ctx.onMsg("自动绑骨：当前没有可绑定的静态网格"); return; }
   ensureDom();
-  var box = localBBox(meshes);
-  autoPlace(box);
+  autoPlace(localBBox(meshes));
   resetRig(); // 模型重载后残留标记清掉
+  enterClean();          // ① 纯净视口（先摘装饰再取景，避免 HUD 干扰量测）
+  fitCamera();           // ② 自动取景
   wrapEl.style.display = "block";
   active = true;
-  selectMarker("chin");
-  updateDots();
+  setStep(0);
   loop();
-  // 线框模式下拖标记看不清模型 → 覆盖层期间强制全彩，BACK 时还原
+  // 线框模式下拖标记看不清模型 → 覆盖层期间强制全彩，退出时还原
   savedRender = $("selRender") ? $("selRender").value : null;
   if (savedRender && savedRender !== "full") {
     $("selRender").value = "full";
     $("selRender").dispatchEvent(new Event("change"));
   }
-  ctx.onMsg("AUTO-RIGGER — 拖动彩色圆环到关节位置，NEXT 生成骨架（BACK 返回）");
+  ctx.onMsg("AUTO-RIGGER — 按步骤拖圆环到关节，左键旋转 / 滚轮缩放查看");
 }
 function close() {
   active = false;
   cancelAnimationFrame(rafId);
   if (wrapEl) wrapEl.style.display = "none";
+  exitClean();           // 还原舞台装饰 / 面板 / 相机相关临时物
   if (savedRender !== null && $("selRender") && $("selRender").value !== savedRender) {
     $("selRender").value = savedRender;
     $("selRender").dispatchEvent(new Event("change"));
@@ -434,7 +509,46 @@ window.holoAutoRigInfo = function () {
     if (o.isBone) bones++;
     if (o.isSkinnedMesh && o.userData && o.userData.holoARBorn) skins++;
   });
-  return { active: active, built: built, bones: bones, skinnedMeshes: skins };
+  var visKeys = [];
+  if (active) markers.forEach(function (mk0) {
+    if (mk0.el.style.display !== "none" && !mk0.el.classList.contains("off")) visKeys.push(mk0.key);
+  });
+  /* b33 取景判据：相机位姿 + 可见网格世界盒 8 角投影到容器的屏幕盒 */
+  var cam = null, scr = null;
+  if (ctx && ctx.camera) {
+    cam = { x: +ctx.camera.position.x.toFixed(3), y: +ctx.camera.position.y.toFixed(3), z: +ctx.camera.position.z.toFixed(3) };
+    var ms = targetMeshes();
+    if (ms.length) {
+      var mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
+      ms.forEach(function (m) {
+        var bb = m.geometry.boundingBox || m.geometry.computeBoundingBox();
+        bb = m.geometry.boundingBox;
+        for (var i = 0; i < 8; i++) {
+          _v.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z);
+          m.localToWorld(_v);
+          mn[0] = Math.min(mn[0], _v.x); mn[1] = Math.min(mn[1], _v.y); mn[2] = Math.min(mn[2], _v.z);
+          mx[0] = Math.max(mx[0], _v.x); mx[1] = Math.max(mx[1], _v.y); mx[2] = Math.max(mx[2], _v.z);
+        }
+      });
+      ctx.camera.updateMatrixWorld(true);
+      var r = ctx.container.getBoundingClientRect(), xs = [], ys = [];
+      for (var j = 0; j < 8; j++) {
+        _v2.set(j & 1 ? mx[0] : mn[0], j & 2 ? mx[1] : mn[1], j & 4 ? mx[2] : mn[2]);
+        _v2.project(ctx.camera);
+        xs.push((_v2.x * 0.5 + 0.5) * r.width);
+        ys.push((-_v2.y * 0.5 + 0.5) * r.height);
+      }
+      var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+      var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+      scr = { cx: +(((minX + maxX) / 2) / r.width).toFixed(3),
+              cy: +(((minY + maxY) / 2) / r.height).toFixed(3),
+              hFrac: +((maxY - minY) / r.height).toFixed(3) };
+    }
+  }
+  return { active: active, built: built, bones: bones, skinnedMeshes: skins,
+           step: step, visibleMarkers: visKeys,
+           stepText: active ? document.getElementById("arGuide").textContent : "",
+           cam: cam, screenBox: scr };
 };
 window.holoARTestPose = function (deg) {
   // 右前臂绕 X 转 deg 度；返回前臂区顶点（主权重 ∈ 肘/腕/手）在转动前后的平均世界坐标与位移。
