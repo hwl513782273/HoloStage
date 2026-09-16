@@ -402,6 +402,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     while (fullGroup.children.length) {
       var c = fullGroup.children[0];
       fullGroup.remove(c);
+      restoreWireMaterials(c); // 1.3.5.7: 先还原原材质再释放，防止共享 dynWireMat 被 dispose
       disposeObject(c);
     }
     if (obj.isBufferGeometry) {
@@ -836,6 +837,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     wireGroup.children.forEach(function (line) {
       line.material.color.setHex(p.main);
     });
+    dynWireMat.color.setHex(p.main); // 1.3.5.7: 动态线框材质跟随预设
     // 1.2.3: 自定义了颜色的部件保持不变，auto 部件跟随预设
     applyUIColors();
   }
@@ -899,9 +901,43 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     bloom.strength = atmo ? bloomBase : 0;
     scene.fog.density = atmo ? 0.055 : 0;
   }
+  // 1.3.5.7(b30): 动态线框——线框模式改为给原蒙皮网格挂 wireframe 材质（GPU 蒙皮），
+  // 动画直接驱动线框。原静态 LineSegments 是载入时刻的几何快照（矩阵一次性烘焙、无骨骼），
+  // 天生不跟动画；仅硬边模式（EdgesGeometry 无法 GPU 蒙皮）仍用静态快照。
+  var dynWireMat = new THREE.MeshBasicMaterial({
+    color: PRESETS.cyan.main, wireframe: true,
+    transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  var origMats = new Map(); // mesh → 原材质（动态线框换装前的）
+  function applyWireMaterials(on) {
+    if (on) dynWireMat.color.setHex(PRESETS[currentPreset].main);
+    fullGroup.traverse(function (o) {
+      if (!(o.isMesh || o.isSkinnedMesh) || !o.material) return;
+      if (o.userData && o.userData.holoOutline) return; // b28: 描边壳保持隐藏，不参与线框
+      if (on) {
+        if (!origMats.has(o)) origMats.set(o, o.material);
+        o.material = dynWireMat;
+      } else if (origMats.has(o)) {
+        o.material = origMats.get(o);
+        origMats.delete(o);
+      }
+    });
+  }
+  function restoreWireMaterials(subtree) { // 换模型释放前先还原，防止共享的 dynWireMat 被 dispose 掉
+    subtree.traverse(function (o) {
+      if (origMats.has(o)) {
+        o.material = origMats.get(o);
+        origMats.delete(o);
+      }
+    });
+  }
   function applyRender() {
-    wireGroup.visible = (state.render === "wire");
-    fullGroup.visible = (state.render === "full");
+    var wire = (state.render === "wire");
+    var dyn = wire && state.mode !== "edges";
+    wireGroup.visible = wire && !dyn;       // 动态线框时隐藏静态层（避免双线叠加）
+    fullGroup.visible = (state.render === "full") || dyn; // 仅全彩/动态线框显示；硬边模式保持纯静态线
+    applyWireMaterials(dyn);
     $("wireOnly").style.display = (state.render === "wire") ? "" : "none";
     $("fullOnly").style.display = (state.render === "full") ? "" : "none";
     refreshAtmo();
@@ -1715,6 +1751,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     state.mode = state.mode === "edges" ? "wire" : "edges";
     $("valMode").textContent = state.mode === "edges" ? "边缘" : "全网格";
     buildWireframe();
+    applyRender(); // 1.3.5.7: 硬边(静态快照)/全网格(动态线框)切换需重估
   };
   $("inpAngle").oninput = function () {
     state.angle = +this.value; $("valAngle").textContent = this.value + "°";
