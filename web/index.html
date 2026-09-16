@@ -183,6 +183,45 @@
   }
   .boneItem:hover { background: rgba(63,185,255,0.14); }
   .boneItem.sel { background: rgba(63,185,255,0.30); color: #fff; }
+
+  /* ---------- 自动绑骨覆盖层（1.3.5.9 b32，Mixamo Auto-Rigger 式） ---------- */
+  #autoRig { position: absolute; inset: 0; display: none; z-index: 60; pointer-events: none;
+             font-family: -apple-system, "PingFang SC", sans-serif; }
+  #arHeader { position: absolute; left: 0; right: 0; top: 0; height: 40px; pointer-events: auto;
+              background: rgba(250,250,250,0.92); color: #222; display: flex; align-items: center;
+              justify-content: center; font-size: 15px; font-weight: 600; letter-spacing: 0.12em; }
+  #arClose { position: absolute; right: 14px; cursor: pointer; font-size: 16px; color: #666; }
+  #arClose:hover { color: #000; }
+  #arDrag { position: absolute; left: 0; right: 0; top: 40px; bottom: 0; pointer-events: auto; cursor: crosshair; }
+  #arDots { position: absolute; inset: 0; overflow: hidden; }
+  .arDot { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%;
+           border: 3.5px solid #fff; background: rgba(255,255,255,0.12); pointer-events: none;
+           box-shadow: 0 0 6px rgba(0,0,0,0.35); }
+  .arDot.sel { border-width: 5px; box-shadow: 0 0 0 3px rgba(255,255,255,0.75), 0 0 10px rgba(0,0,0,0.4); }
+  #arLeft { position: absolute; left: 0; top: 40px; bottom: 0; width: 210px; pointer-events: auto;
+            background: rgba(250,250,250,0.94); color: #333; padding: 14px 12px; font-size: 13px; }
+  .arItem { display: flex; align-items: center; gap: 8px; padding: 9px 8px; border-radius: 6px; cursor: pointer; }
+  .arItem:hover { background: rgba(0,0,0,0.05); }
+  .arItem.sel { background: rgba(24,95,165,0.12); }
+  .arChip { width: 12px; height: 12px; border-radius: 50%; border: 2.5px solid #fff; box-sizing: border-box;
+            outline: 1.5px solid rgba(0,0,0,0.35); flex: 0 0 auto; }
+  .arLbl { font-weight: 600; }
+  .arTip { margin-left: auto; font-size: 11px; color: #888; }
+  .arRow { margin: 6px 8px; }
+  label.arSym { display: flex; align-items: center; gap: 6px; margin-top: 12px; cursor: pointer; }
+  .arLbl2 { color: #555; }
+  #selARLOD { width: 100%; margin-top: 4px; padding: 4px; font-size: 12px; }
+  .arBtns { position: absolute; left: 12px; right: 12px; bottom: 14px; display: flex; gap: 8px; }
+  .arBtns button { flex: 1; padding: 9px 0; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  #btnARBack { background: #e4e6ea; color: #333; }
+  #btnARNext { background: #f5820b; color: #fff; }
+  #btnARNext:hover { background: #ff9326; }
+  #arRight { position: absolute; right: 0; top: 40px; width: 240px; pointer-events: auto;
+             background: rgba(250,250,250,0.94); color: #333; padding: 16px 14px; font-size: 13px; line-height: 1.6; }
+  #arRight b { font-size: 14px; }
+  #arRight p { margin-top: 10px; }
+  #arRight .arDim { color: #777; font-size: 12px; }
+  #btnAutoRig { margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -301,7 +340,10 @@
     <button id="btnSceneReset">重置场景（转速/动作回默认）</button>
 
     <h2>骨骼 / 姿态</h2>
-    <div id="skelNone" style="font-size:11px;color:var(--ui-dim);margin:4px 0;">当前模型无骨骼数据（STL / OBJ / PLY 这类纯几何模型没有骨架）</div>
+    <div id="skelNone" style="font-size:11px;color:var(--ui-dim);margin:4px 0;">当前模型无骨骼数据（STL / OBJ / PLY 这类纯几何模型没有骨架）<br>
+      <button id="btnAutoRig">自动绑骨（本地 AUTO-RIGGER）</button>
+      <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">拖标记定关节 → 生成人形骨架+蒙皮，之后即可点选拖动摆姿势</div>
+    </div>
     <div id="skelUI" style="display:none">
       <div class="row"><label>显示骨架</label><input type="checkbox" id="inpSkel"></div>
       <div class="row"><label>姿势模式</label><input type="checkbox" id="inpSkelEdit"></div>

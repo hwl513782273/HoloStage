@@ -53,6 +53,7 @@ import { buildRingSVG, RING_STYLES, DATA_TEXT } from "./rings.js";
 import { drawRingCanvas, ring3dSpin, RING3D_SIZE } from "./rings3d.js";
 import { createBackgroundLayer } from "./bgfx.js";
 import { collectSkeleton, createSkeletonView, boneTree } from "./skeleton.js";
+import { openAutoRig } from "./autorig.js"; // 1.3.5.9(b32): 本地自动绑骨（Mixamo 式拖标记）
 import initTinyUSDZNative from "./tinyusdz-glue.js";
 
 (function () {
@@ -1371,6 +1372,22 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       if (uiEl) uiEl.style.display = "none";
       skelEditOn = false;
       var ie0 = $("inpSkelEdit"); if (ie0) ie0.checked = false;
+      // b32: 无骨骼模型 → 显示「自动绑骨」入口，NEXT 产物重跑 setupSkeleton 接管
+      var ab = $("btnAutoRig");
+      if (ab) ab.onclick = function () {
+        openAutoRig({
+          camera: camera, container: stageEl || document.body,
+          group: fullGroup, root: modelRoot,
+          onMsg: function (m) { statusEl.textContent = m; },
+          onBuilt: function (summary) {
+            setupSkeleton(modelRoot); // 重新收集：新 SkinnedMesh 就位后骨架面板接管
+            statusEl.textContent = summary;
+            var s1 = $("inpSkel"), s2 = $("inpSkelEdit");
+            if (s1 && !s1.checked) { s1.checked = true; s1.dispatchEvent(new Event("change")); }
+            if (s2 && !s2.checked) { s2.checked = true; s2.dispatchEvent(new Event("change")); }
+          }
+        });
+      };
       return;
     }
     skelView = createSkeletonView(skelVis, { color: PRESETS[currentPreset].main, selectedColor: 0xffffff });
