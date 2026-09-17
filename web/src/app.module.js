@@ -451,18 +451,24 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
    * 蒙皮/raw 恰好差一个 root 缩放比（CHR214 实测 0.27 倍「缩小偏移」，
    * CHR702 也隐性缩小 0.55 倍）。修法：归一化后按当前静止姿态重算 boneInverses
    * 并把 bindMatrix 更新为当前网格世界矩阵 —— 静止全彩从此精确贴合 raw 几何。
-   * 骨骼 TRS 不动（动画曲线坐标系不受影响），GLB 等静止=bind 的模型为无操作。 */
+   * 骨骼 TRS 不动（动画曲线坐标系不受影响），GLB 等静止=bind 的模型为无操作。
+   * b40（1.3.5.17）：bindMatrix/bindMatrixInverse 是【每张 SkinnedMesh 各一份】，
+   * 旧代码用 seen 按骨架去重 → 同骨架第 2~N 张网格拿不到更新，bindMatrix 停在
+   * GLTFLoader 的单位阵，而 attached 模式每帧又把 bindMatrixInverse 同步成
+   * matrixWorld⁻¹ → 蒙皮输出被整体放大回文件尺度（实测 Lady Devimon 等
+   * 55/131 个多网格模型「加载即变形」，静止与播放态都炸）。改为：inverses 每骨架
+   * 重算一次，bind 矩阵对每张网格都刷新。 */
   function rebindSkinnedMeshes(obj) {
     if (!obj || !obj.isObject3D) return;
     obj.updateMatrixWorld(true);
     var seen = new Set();
     obj.traverse(function (o) {
-      if (!o.isSkinnedMesh || !o.skeleton || seen.has(o.skeleton)) return;
-      seen.add(o.skeleton);
-      var sk = o.skeleton;
-      if (!sk.bones.length) return;
-      sk.calculateInverses();          // 以当前静止骨骼世界矩阵为绑定基准
-      o.bindMatrix.copy(o.matrixWorld);
+      if (!o.isSkinnedMesh || !o.skeleton || !o.skeleton.bones.length) return;
+      if (!seen.has(o.skeleton)) {
+        seen.add(o.skeleton);
+        o.skeleton.calculateInverses();  // 以当前静止骨骼世界矩阵为绑定基准（每骨架一次）
+      }
+      o.bindMatrix.copy(o.matrixWorld);  // bind 矩阵对是每网格独立的，必须逐张刷新
       o.bindMatrixInverse.copy(o.matrixWorld).invert();
     });
   }
@@ -1084,6 +1090,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     $("valLoop").textContent = "循环";
     $("btnPlay").textContent = "暂停";
     ui.style.display = ""; hint.style.display = "none";
+    if (animStaticOnly) {
+      // b40: 全部片段播放即变形 —— 停在绑定姿态，不自动播放；用户可手动选播
+      anim.paused = true;
+      $("btnPlay").textContent = "播放";
+      $("inpAProg").value = 0; $("valAProg").textContent = "0%";
+      if (mixer) mixer.timeScale = 0;
+      statusEl.textContent = "动作数据与本骨架不匹配（播放会变形）—— 已停在绑定姿态，可在上方列表手动选播";
+      return;
+    }
     playAnimClip(0);
     applyAnimOff(); // b31: 关闭动画若处于勾选状态，重载后保持停用
   }
@@ -1094,6 +1109,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   ];
   function setupAnimations(object3D, clips, kind) {
     mmdHelper = null; mixer = null; animClips = []; animAction = null; animClipIdx = 0;
+    animStaticOnly = false; // b40: 每次载入重置静态兜底标志
     if (kind === "mmd" && object3D && object3D.isSkinnedMesh) {
       // PMX/PMD：交给 MMDAnimationHelper（IK / grant / 物理），动作来源于拖入的 .vmd
       mmdMesh = object3D;
@@ -1136,13 +1152,18 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     } else {
       // 1.3.5.3：所有可用片段都是异骨架变体（实测 ReArise Gallantmon chr126.fbx：
       // 文件里 16 个 Take 是被 rip 丢空的壳、15 个真 Take 全属于另一套骨架）——
-      // 播放任何一个都会把模型拧碎。此时弃用全部动画，退回「空片段 = 绑定姿态」
-      // 安全静态显示，绝不自动播放会炸的片段。
+      // 播放任何一个都会把模型拧碎。
+      // b40 修复：旧代码只是显示一条「已停用动画」消息，animClips 却回退成
+      // 全量原始 clips 并在 refreshAnimUI 里自动播放 clip 0 —— 过滤白做，
+      // 载入即炸（Sketchfab 数码兽包 55/131 个模型命中此坑）。
+      // 现在置 animStaticOnly：refreshAnimUI 不自动播放，停在绑定姿态；
+      // 片段列表保留，用户可在面板手动选播（自担风险）。
       var safe = clips.filter(function (c) { return usable.indexOf(c) < 0; });
       animClips = safe.length ? safe : clips;
       animDropped = 0;
-      statusEl.textContent = "检测到 " + animRawTotal + " 个动作均与本骨架不匹配（异骨架 rip），"
-        + "已停用动画，按静止姿态显示";
+      animStaticOnly = true;
+      statusEl.textContent = "检测到 " + animRawTotal + " 个动作均与本骨架不匹配（播放会变形），"
+        + "已停在绑定姿态；可在动画面板手动选播";
     }
     window.holoAnimClips = function () { return { kept: animClips, all: clips }; }; // 1.3.5.3 自检取证用
     refreshAnimUI();
@@ -1154,6 +1175,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
    * Peckmon 正常姿态 0.803×0.803×1.051，空片段下只剩 0.188×0.145×0.188。
    * 这里只保留「至少有一条轨道能落到真实节点」的片段。 */
   var animRawTotal = 0, animDropped = 0;
+  var animStaticOnly = false; // b40: 全部片段滤光时为 true —— 不自动播放，停在绑定姿态
   function collectNodes(root) {
     var m = {};
     if (root) root.traverse(function (o) { if (o.name) m[o.name] = 1; if (o.uuid) m[o.uuid] = 1; });
@@ -1188,10 +1210,18 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
    * （与 D3 自检同口径：健康动作 diag 比率在 [0.5, 2.5] 内。）
    * 采样后恢复骨骼静止 TRS；全被滤光时返回空数组，由调用方回退安全静态。 */
   function filterRigMismatchedClips(root, clips) {
-    var skinned = null;
-    root.traverse(function (o) { if (!skinned && o.isSkinnedMesh) skinned = o; });
-    if (!skinned || !skinned.skeleton || !skinned.skeleton.bones.length) return clips;
-    var bones = skinned.skeleton.bones;
+    /* b40: 收集全部 SkinnedMesh —— 旧版只取第一张，多网格模型（如 Omnimon 三张
+     * 蒙皮网格行为各异：①塌成点 / ②③炸到 9~11）只有①被测，②③全漏。 */
+    var skins = [];
+    root.traverse(function (o) { if (o.isSkinnedMesh && o.skeleton && o.skeleton.bones.length) skins.push(o); });
+    if (!skins.length) return clips;
+    /* 骨骼快照取全部骨架的并集（不同网格可挂不同骨架，探针动画会动到所有骨骼）。 */
+    var boneSeen = new Set(), bones = [];
+    skins.forEach(function (m) {
+      m.skeleton.bones.forEach(function (b) {
+        if (!boneSeen.has(b)) { boneSeen.add(b); bones.push(b); }
+      });
+    });
     var saved = bones.map(function (b) {
       return { p: b.position.clone(), q: b.quaternion.clone(), s: b.scale.clone() };
     });
@@ -1200,40 +1230,49 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
         b.position.copy(saved[i].p); b.quaternion.copy(saved[i].q); b.scale.copy(saved[i].s);
       });
       root.updateMatrixWorld(true);
-      if (skinned.skeleton.update) skinned.skeleton.update();
+      skins.forEach(function (m) { if (m.skeleton.update) m.skeleton.update(); });
     }
+    /* b40: cpuDiag 改为「所有蒙皮网格取联合包围盒 diag」——任一网格炸/塌都会抬升
+     * 或压缩联合盒，不再依赖恰好抽中第一张。 */
     function cpuDiag() {
       root.updateMatrixWorld(true);
-      if (skinned.skeleton.update) skinned.skeleton.update();
-      var si = skinned.geometry.attributes.skinIndex, sw = skinned.geometry.attributes.skinWeight;
-      var pos = skinned.geometry.attributes.position;
-      var bm = skinned.skeleton.boneMatrices;
-      var min = [1e9, 1e9, 1e9], max = [-1e9, -1e9, -1e9];
+      skins.forEach(function (m) { if (m.skeleton.update) m.skeleton.update(); });
+      var gmin = [1e9, 1e9, 1e9], gmax = [-1e9, -1e9, -1e9];
       var v = new THREE.Vector3();
-      var step = Math.max(1, Math.floor(pos.count / 1200));
-      for (var k = 0; k < pos.count; k += step) {
-        v.set(pos.getX(k), pos.getY(k), pos.getZ(k)).applyMatrix4(skinned.bindMatrix);
-        var x = 0, y = 0, z = 0, nan = false;
-        for (var j = 0; j < 4; j++) {
-          var w = j === 0 ? sw.getX(k) : (j === 1 ? sw.getY(k) : (j === 2 ? sw.getZ(k) : sw.getW(k)));
-          if (w === 0) continue;
-          var b = (j === 0 ? si.getX(k) : (j === 1 ? si.getY(k) : (j === 2 ? si.getZ(k) : si.getW(k)))) * 16;
-          var vx = v.x, vy = v.y, vz = v.z;
-          x += w * (bm[b] * vx + bm[b + 4] * vy + bm[b + 8] * vz + bm[b + 12]);
-          y += w * (bm[b + 1] * vx + bm[b + 5] * vy + bm[b + 9] * vz + bm[b + 13]);
-          z += w * (bm[b + 2] * vx + bm[b + 6] * vy + bm[b + 10] * vz + bm[b + 14]);
+      for (var s = 0; s < skins.length; s++) {
+        var skinned = skins[s];
+        var si = skinned.geometry.attributes.skinIndex, sw = skinned.geometry.attributes.skinWeight;
+        var pos = skinned.geometry.attributes.position;
+        var bm = skinned.skeleton.boneMatrices;
+        var min = [1e9, 1e9, 1e9], max = [-1e9, -1e9, -1e9];
+        var step = Math.max(1, Math.floor(pos.count / 1200));
+        for (var k = 0; k < pos.count; k += step) {
+          v.set(pos.getX(k), pos.getY(k), pos.getZ(k)).applyMatrix4(skinned.bindMatrix);
+          var x = 0, y = 0, z = 0, nan = false;
+          for (var j = 0; j < 4; j++) {
+            var w = j === 0 ? sw.getX(k) : (j === 1 ? sw.getY(k) : (j === 2 ? sw.getZ(k) : sw.getW(k)));
+            if (w === 0) continue;
+            var b = (j === 0 ? si.getX(k) : (j === 1 ? si.getY(k) : (j === 2 ? si.getZ(k) : si.getW(k)))) * 16;
+            var vx = v.x, vy = v.y, vz = v.z;
+            x += w * (bm[b] * vx + bm[b + 4] * vy + bm[b + 8] * vz + bm[b + 12]);
+            y += w * (bm[b + 1] * vx + bm[b + 5] * vy + bm[b + 9] * vz + bm[b + 13]);
+            z += w * (bm[b + 2] * vx + bm[b + 6] * vy + bm[b + 10] * vz + bm[b + 14]);
+          }
+          // detached 模式必须乘 bindMatrixInverse（b25 摘挂后 ≠ 单位阵）
+          v.set(x, y, z).applyMatrix4(skinned.bindMatrixInverse).applyMatrix4(skinned.matrixWorld);
+          for (var c = 0; c < 3; c++) {
+            var val = v.getComponent(c);
+            if (val !== val) return NaN;
+            if (val < min[c]) min[c] = val;
+            if (val > max[c]) max[c] = val;
+          }
         }
-        // detached 模式必须乘 bindMatrixInverse（b25 摘挂后 ≠ 单位阵）
-        v.set(x, y, z).applyMatrix4(skinned.bindMatrixInverse).applyMatrix4(skinned.matrixWorld);
-        for (var c = 0; c < 3; c++) {
-          var val = v.getComponent(c);
-          if (val !== val) nan = true;
-          if (val < min[c]) min[c] = val;
-          if (val > max[c]) max[c] = val;
+        for (var c2 = 0; c2 < 3; c2++) {
+          if (min[c2] < gmin[c2]) gmin[c2] = min[c2];
+          if (max[c2] > gmax[c2]) gmax[c2] = max[c2];
         }
-        if (nan) return NaN;
       }
-      var dx = max[0] - min[0], dy = max[1] - min[1], dz = max[2] - min[2];
+      var dx = gmax[0] - gmin[0], dy = gmax[1] - gmin[1], dz = gmax[2] - gmin[2];
       return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
     var bindDiag = cpuDiag();
@@ -1246,10 +1285,21 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
         try {
           var action = probeMixer.clipAction(c);
           action.play();
-          for (var t = 0.12; t <= 1.3; t += 0.55) {
-            probeMixer.setTime(t);
+          /* b40: 加密采样 —— 旧版只采 0.12/0.67/1.22 三个绝对时刻，快动作会漏；
+           * 改为按片段时长的 9 个相对时刻全覆盖。 */
+          var dur = c.duration || 0;
+          /* 0%/2% 抓「长片段开头」：0.1 倍速自动播放 1s 才推进长片段的 1%~5%，
+           * 实测 Jetdragon/Omnimon 的爆炸窗口就在开头（旧采样从 5% 起漏抓）。 */
+          var fracs = [0.0, 0.02, 0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95];
+          for (var fi = 0; fi < fracs.length && dur > 0; fi++) {
+            probeMixer.setTime(fracs[fi] * dur);
             var d = cpuDiag();
-            if (!isFinite(d) || d > bindDiag * 2.5) { bad = true; break; }
+            /* b40: 双阈值 —— 相对 2.5×bindDiag 之外加绝对上限 4.2（几何归一化后
+             * 包围盒对角线恒 ∈ [2.2, 3.81]，bind 本身偏大时相对阈值会放行炸片段，
+             * 实测 Magnamon bind=3.41、片段炸到 6.62 仍被 2.5× 放行）；
+             * 另加下限 0.4×bindDiag —— 蒙皮塌缩成一点（Omnimon ①网格 diag 0.05）
+             * 旧版只查上界会放行。 */
+            if (!isFinite(d) || d > 4.2 || d > bindDiag * 2.5 || d < bindDiag * 0.4) { bad = true; break; }
           }
           action.stop();
           probeMixer.uncacheAction(c);
