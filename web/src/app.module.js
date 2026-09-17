@@ -466,14 +466,17 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
    * 两种 bindMode 下都精确还原 glTF 语义 v' = R·pose·ibm·M_file·v。
    * 但部分 rip 的文件 ibm 空间异常（Jetdragon/Magnamon 实测静止 diag 39/37181），
    * 不能一刀切 —— 逐骨架自适应：先算 B 方案（bind=rest，静止=raw）取 diagB，
-   * 再算 A 方案（文件 ibm·R⁻¹，静止=rest 重蒙皮）取 diagA，diagA 落在
-   * [0.5·diagB, max(4.2, 1.6·diagB)] 内才采用 A，否则退回 B（b40 行为，
-   * 由片段过滤器兜底停用动画）。验证用直接结果指标（静止 CPU 蒙皮 diag），
-   * 不用代理指标（b41 v3 的 boneM≈I 校验不可靠）。 */
+   * 再算 A 方案（文件 ibm·R⁻¹，静止=rest 重蒙皮）取签名。
+   * b43（1.3.5.18）：b42 的门限 [0.5, 1.6]×diagB 误杀了合法 rest-reskin ——
+   * Zhuqiaomon 展翼静止 diag 9.13（=3.4×bind）、Omnimon 13.15，目检画面完好，
+   * 「朱雀兽收拢 bind 姿态」反而是错位显示；真正 ibm 错乱的（Jetdragon 20×、
+   * Magnamon 100×）远超此范围。新门限：diagA ∈ [0.3, 8]×diagB 且
+   * maxD/p95D < 3（长刺签名——ibm 错乱常伴随零件飞散），否则退回 B。 */
   function cpuSkinDiagFor(rootObj, sk) {
     rootObj.updateMatrixWorld(true);
     if (sk.update) sk.update();
     var gmin = [1e9, 1e9, 1e9], gmax = [-1e9, -1e9, -1e9], found = 0;
+    var dists = [];
     var v = new THREE.Vector3();
     rootObj.traverse(function (o) {
       if (!o.isSkinnedMesh || o.skeleton !== sk) return;
@@ -495,31 +498,66 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
         }
         v.set(x, y, z).applyMatrix4(o.bindMatrixInverse).applyMatrix4(o.matrixWorld);
         var arr = [v.x, v.y, v.z];
+        dists.push(Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z));
         for (var c = 0; c < 3; c++) {
           if (arr[c] < gmin[c]) gmin[c] = arr[c];
           if (arr[c] > gmax[c]) gmax[c] = arr[c];
         }
       }
     });
-    if (!found) return NaN;
+    if (!found) return null;
+    dists.sort(function (a, b) { return a - b; });
+    var p95 = dists[Math.floor(dists.length * 0.95)] || 0;
+    var maxD = dists[dists.length - 1] || 0;
+    var dx = gmax[0] - gmin[0], dy = gmax[1] - gmin[1], dz = gmax[2] - gmin[2];
+    return { diag: Math.sqrt(dx * dx + dy * dy + dz * dz),
+             cx: (gmin[0] + gmax[0]) / 2, cy: (gmin[1] + gmax[1]) / 2, cz: (gmin[2] + gmax[2]) / 2,
+             maxD: maxD, p95: p95, ratio: maxD / (p95 || 1e-9) };
+  }
+  /* b43: 全部蒙皮网格的联合静止包络签名（取景二次归一用） */
+  function cpuSkinSigAll(rootObj) {
+    rootObj.updateMatrixWorld(true);
+    var gmin = [1e9, 1e9, 1e9], gmax = [-1e9, -1e9, -1e9], found = 0;
+    var v = new THREE.Vector3();
+    rootObj.traverse(function (o) {
+      if (!o.isSkinnedMesh || !o.skeleton) return;
+      found++;
+      o.skeleton.update();
+      var si = o.geometry.attributes.skinIndex, sw = o.geometry.attributes.skinWeight;
+      var pos = o.geometry.attributes.position, bm = o.skeleton.boneMatrices;
+      var step = Math.max(1, Math.floor(pos.count / 1200));
+      for (var k = 0; k < pos.count; k += step) {
+        v.set(pos.getX(k), pos.getY(k), pos.getZ(k)).applyMatrix4(o.bindMatrix);
+        var x = 0, y = 0, z = 0;
+        for (var j = 0; j < 4; j++) {
+          var w = j === 0 ? sw.getX(k) : (j === 1 ? sw.getY(k) : (j === 2 ? sw.getZ(k) : sw.getW(k)));
+          if (w === 0) continue;
+          var b = (j === 0 ? si.getX(k) : (j === 1 ? si.getY(k) : (j === 2 ? si.getZ(k) : si.getW(k)))) * 16;
+          var vx = v.x, vy = v.y, vz = v.z;
+          x += w * (bm[b] * vx + bm[b + 4] * vy + bm[b + 8] * vz + bm[b + 12]);
+          y += w * (bm[b + 1] * vx + bm[b + 5] * vy + bm[b + 9] * vz + bm[b + 13]);
+          z += w * (bm[b + 2] * vx + bm[b + 6] * vy + bm[b + 10] * vz + bm[b + 14]);
+        }
+        v.set(x, y, z).applyMatrix4(o.bindMatrixInverse).applyMatrix4(o.matrixWorld);
+        var arr = [v.x, v.y, v.z];
+        for (var c = 0; c < 3; c++) {
+          if (arr[c] < gmin[c]) gmin[c] = arr[c];
+          if (arr[c] > gmax[c]) gmax[c] = arr[c];
+        }
+      }
+    });
+    if (!found) return null;
     var dx = gmax[0] - gmin[0], dy = gmax[1] - gmin[1], dz = gmax[2] - gmin[2];
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
   }
-  function rebindSkinnedMeshes(obj) {
-    if (!obj || !obj.isObject3D) return;
+  function applyBindSchemes(obj, skins) {
     obj.updateMatrixWorld(true);
-    var skins = [];
-    obj.traverse(function (o) {
-      if (o.isSkinnedMesh && o.skeleton && o.skeleton.bones.length) skins.push(o);
-    });
-    if (!skins.length) return;
     var R = obj.matrixWorld.clone(), Rinv = R.clone().invert();
     /* b40: bind 矩阵对是每网格独立的，必须逐张刷新（先全刷，后面验证才有效） */
     skins.forEach(function (o) {
       o.bindMatrix.copy(o.matrixWorld);
       o.bindMatrixInverse.copy(o.matrixWorld).invert();
     });
-    var tmp = new THREE.Matrix4();
     var seen = new Set();
     skins.forEach(function (o) {
       var sk = o.skeleton;
@@ -530,18 +568,75 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
         sk.holoFileIbm = sk.boneInverses.map(function (m) { return m.clone(); });
       }
       sk.calculateInverses();               // B 方案：bind=rest，静止=raw（b40 行为）
-      var diagB = cpuSkinDiagFor(obj, sk);
-      for (var i = 0; i < sk.boneInverses.length; i++) {
-        sk.boneInverses[i].copy(sk.holoFileIbm[i]).multiply(Rinv);  // A 方案：ibm·R⁻¹
+      var sigB = cpuSkinDiagFor(obj, sk);
+      sk.holoRawDiag = sigB ? sigB.diag : 0;  // b43: B 静止=raw 顶点（二次取景基准）
+      /* b43: ibm-rest 自洽性 —— file 空间 boneWorld·fileIbm ≈ R ⟺ rest·ibm ≈ I
+       * （bind=rest）。自洽 → B 播放忠实；偏差大 → B 播放必散架（朱雀兽实测）。 */
+      var devAvg = 0, devMax = 0;
+      for (var i = 0; i < sk.bones.length; i++) {
+        var W = new THREE.Matrix4().copy(sk.bones[i].matrixWorld).multiply(sk.holoFileIbm[i]);
+        var e = W.elements, rE = R.elements, dev = 0;
+        for (var k = 0; k < 16; k++) dev = Math.max(dev, Math.abs(e[k] - rE[k]));
+        devAvg += dev; devMax = Math.max(devMax, dev);
       }
-      var diagA = cpuSkinDiagFor(obj, sk);
-      var okA = isFinite(diagA) && diagA > 0 &&
-                diagA <= Math.max(4.2, diagB * 1.6) && diagA >= diagB * 0.5;
+      devAvg /= sk.bones.length;
+      for (var i2 = 0; i2 < sk.boneInverses.length; i2++) {
+        sk.boneInverses[i2].copy(sk.holoFileIbm[i2]).multiply(Rinv);  // A 方案：ibm·R⁻¹
+      }
+      var sigA = cpuSkinDiagFor(obj, sk);
+      /* b43: 门限放宽 —— 合法 rest-reskin 可达数倍 bind（朱雀兽展翼 3.4×、Omnimon 4.6×），
+       * 但 ibm 错乱（Jetdragon 20×、Magnamon 100×）或零件飞散（ratio≥3）必拒。
+       * b43b: 中心漂移检查 —— rest·ibm 平移分量错误时形状正常但整体漂走
+       * （Lady Devimon 实测漂到 y=4500），中心偏移超 raw 尺度即拒。 */
+      var okA = false;
+      if (sigA && sigB && sigA.diag > 0 &&
+          sigA.diag >= sigB.diag * 0.3 && sigA.diag <= sigB.diag * 8 &&
+          sigA.ratio < 3) {
+        var drift = Math.sqrt(Math.pow(sigA.cx - sigB.cx, 2) +
+                              Math.pow(sigA.cy - sigB.cy, 2) +
+                              Math.pow(sigA.cz - sigB.cz, 2));
+        /* 合法 rest 姿态也可能偏 1~2 个 bind 尺度（Omnimon 实测）；
+         * 病态漂移是数十~数千倍（Lady Devimon y=4500）。取 3× 分界。 */
+        okA = drift <= Math.max(1.0, sigB.diag * 3);
+      }
+      if (window.__forceBindA === true) okA = true;   /* b42 实验：页面强制 A */
+      if (window.__forceBindA === false) okA = false; /* b42 实验：页面强制 B */
+      sk.holoBindA = okA;
+      /* b43: 可信 bind = A 已采用（静态验证过），或 B 且文件 ibm 与 rest 自洽 */
+      sk.holoBindTrusted = okA || (devAvg < 0.1 && devMax < 0.5);
       if (!window.__rebindLog) window.__rebindLog = [];
-      window.__rebindLog.push({ bones: sk.bones.length, diagB: +diagB.toFixed(2), diagA: +diagA.toFixed(2), okA: okA });
+      window.__rebindLog.push({ bones: sk.bones.length,
+        diagB: sigB ? +sigB.diag.toFixed(2) : null,
+        diagA: sigA ? +sigA.diag.toFixed(2) : null,
+        ratioA: sigA ? +sigA.ratio.toFixed(2) : null,
+        devAvg: +devAvg.toFixed(2), A: okA, trusted: sk.holoBindTrusted });
       if (!okA) sk.calculateInverses();     // A 不可用 → 退回 B（b40 行为）
     });
     obj.updateMatrixWorld(true);
+  }
+  function rebindSkinnedMeshes(obj) {
+    if (!obj || !obj.isObject3D) return;
+    var skins = [];
+    obj.traverse(function (o) {
+      if (o.isSkinnedMesh && o.skeleton && o.skeleton.bones.length) skins.push(o);
+    });
+    if (!skins.length) return;
+    applyBindSchemes(obj, skins);
+    /* b43: 二次取景归一 —— A 采用后静止（rest-reskin，如朱雀兽展翼）可能比
+     * raw（收拢 bind 姿态）大数倍，超出 normalize 取景。整体缩放 obj 使静止
+     * 包络回到 raw 尺度；缩放改变 R → 用新 R 重做一遍 bind 决策（holoFileIbm
+     * 已留底，本函数幂等）。 */
+    var sigAll = cpuSkinSigAll(obj);
+    var rawDiag = 0, devSum = 0;
+    skins.forEach(function (o) {
+      var sk = o.skeleton;
+      if (sk.holoRawDiag && sk.holoRawDiag > rawDiag) rawDiag = sk.holoRawDiag;
+    });
+    if (sigAll && rawDiag > 0 && (sigAll > rawDiag * 1.25 || sigAll < rawDiag * 0.8)) {
+      var k = rawDiag / sigAll;
+      obj.scale.multiplyScalar(k);
+      applyBindSchemes(obj, skins);
+    }
   }
 
   /* ---------- 全彩平滑法线（1.2.9）----------
@@ -1305,11 +1400,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       skins.forEach(function (m) { if (m.skeleton.update) m.skeleton.update(); });
     }
     /* b40: cpuDiag 改为「所有蒙皮网格取联合包围盒 diag」——任一网格炸/塌都会抬升
-     * 或压缩联合盒，不再依赖恰好抽中第一张。 */
+     * 或压缩联合盒，不再依赖恰好抽中第一张。
+     * b43: 同时取「长刺签名」——顶点到世界原点距离的 maxD/p95D。炸裂=少数顶点
+     * 飞出（ratio=maxD/p95D 爆表），真实大幅动作（展翅等）=远程顶点成群移动
+     * （ratio 与静止同量级）。diag 绝对值不再是判坏依据（朱雀兽合法展翼 11.7）。 */
     function cpuDiag() {
       root.updateMatrixWorld(true);
       skins.forEach(function (m) { if (m.skeleton.update) m.skeleton.update(); });
       var gmin = [1e9, 1e9, 1e9], gmax = [-1e9, -1e9, -1e9];
+      var dists = [];
       var v = new THREE.Vector3();
       for (var s = 0; s < skins.length; s++) {
         var skinned = skins[s];
@@ -1332,6 +1431,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
           }
           // detached 模式必须乘 bindMatrixInverse（b25 摘挂后 ≠ 单位阵）
           v.set(x, y, z).applyMatrix4(skinned.bindMatrixInverse).applyMatrix4(skinned.matrixWorld);
+          dists.push(Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z));
           for (var c = 0; c < 3; c++) {
             var val = v.getComponent(c);
             if (val !== val) return NaN;
@@ -1344,11 +1444,21 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
           if (max[c2] > gmax[c2]) gmax[c2] = max[c2];
         }
       }
+      dists.sort(function (a, b) { return a - b; });
+      var p95 = dists[Math.floor(dists.length * 0.95)] || 0;
+      var maxD = dists[dists.length - 1] || 0;
       var dx = gmax[0] - gmin[0], dy = gmax[1] - gmin[1], dz = gmax[2] - gmin[2];
-      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+      return { diag: Math.sqrt(dx * dx + dy * dy + dz * dz),
+               maxD: maxD, p95: p95, ratio: maxD / (p95 || 1e-9) };
     }
-    var bindDiag = cpuDiag();
-    if (!(bindDiag > 0) || !isFinite(bindDiag)) { restore(); return clips; }
+    var bindSig = cpuDiag();
+    if (!bindSig || !(bindSig.diag > 0) || !isFinite(bindSig.diag)) { restore(); return clips; }
+    /* b43: bind 可信度分级 —— 全部骨架 trusted（A 已静态验证，或 B 且 ibm≡rest）
+     * 用宽阈值（真实大幅动作放行）；任一骨架不可信（fallback B）用严阈值
+     * —— Magnamon 实测 clip0 t=0 即膜状膨胀 1.4×，必须 1.3 才拦得住。 */
+    var bindTrusted = true;
+    skins.forEach(function (m) { if (m.skeleton.holoBindTrusted === false) bindTrusted = false; });
+    var maxGrow = bindTrusted ? 3 : 1.3, maxShrink = bindTrusted ? 0.3 : 0.55, maxRatio = bindTrusted ? 6 : 4;
     var probeMixer = new THREE.AnimationMixer(root);
     /* b42 临时取证：记录每个片段的采样 diag */
     if (!window.__filterLog) window.__filterLog = [];
@@ -1369,15 +1479,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
           for (var fi = 0; fi < fracs.length && dur > 0; fi++) {
             probeMixer.setTime(fracs[fi] * dur);
             var d = cpuDiag();
-            __logSamples.push(+d.toFixed(2));
-            /* b40: 双阈值 —— 相对 2.5×bindDiag 之外加绝对上限 4.2（几何归一化后
-             * 包围盒对角线恒 ∈ [2.2, 3.81]，bind 本身偏大时相对阈值会放行炸片段，
-             * 实测 Magnamon bind=3.41、片段炸到 6.62 仍被 2.5× 放行）；
-             * 另加下限 0.4×bindDiag —— 蒙皮塌缩成一点（Omnimon ①网格 diag 0.05）
-             * 旧版只查上界会放行。 */
-            if (!isFinite(d) || d > 4.2 || d > bindDiag * 2.5 || d < bindDiag * 0.4) { bad = true; break; }
+            __logSamples.push(d ? +(d.diag.toFixed(2)) + "/" + +(d.ratio.toFixed(1)) : "NaN");
+            /* b43: 新判据 —— 相对膨胀（可信 3×/不可信 2×bindDiag；真实动作 ≤2×，
+             * 炸裂 ≥5×）、塌缩（0.3×/0.4×）、长刺签名 ratio>6/4（静止≈1.2~1.9，
+             * 长刺≥10）。旧绝对上限 4.2 已废除 —— 它把朱雀兽合法展翼（11.7）误判为炸。 */
+            if (!d || !isFinite(d.diag) ||
+                d.diag > bindSig.diag * maxGrow || d.diag < bindSig.diag * maxShrink ||
+                d.ratio > maxRatio) { bad = true; break; }
           }
-          window.__filterLog.push({ clip: (c.name || '?').slice(0, 20), bind: +bindDiag.toFixed(2), samples: __logSamples, bad: bad });
+          window.__filterLog.push({ clip: (c.name || '?').slice(0, 20), bind: +bindSig.diag.toFixed(2), samples: __logSamples, bad: bad });
           action.stop();
           probeMixer.uncacheAction(c);
         } catch (e) { bad = false; }
