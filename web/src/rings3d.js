@@ -39,7 +39,7 @@ export function drawRingCanvas(style, color, hideDot, opts) {
   }
   function ringText(text, r, size, alpha, stepPx) {
     x.fillStyle = color; x.globalAlpha = alpha;
-    x.font = size + "px Menlo, monospace";
+    x.font = size + "px 'DigiCode', Menlo, monospace"; // b34: 数据弧文字用 DigiCode 字形（未载入时回退 Menlo）
     x.textAlign = "center"; x.textBaseline = "middle";
     var step = stepPx / r;
     for (var k = 0; k < text.length; k++) {

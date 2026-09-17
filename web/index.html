@@ -227,6 +227,26 @@
   #btnARFit:hover { background: #fff; }
   #arHint { position: absolute; right: 16px; bottom: 22px; font-size: 11px; color: #7c828a; }
   #btnAutoRig { margin-top: 6px; }
+  /* 1.3.5.11(b34): 数码文字（DigiCode）——官方字形字体，环上文字与转换器共用 */
+  @font-face {
+    font-family: "DigiCode";
+    src: url("lib/digicode.ttf") format("truetype");
+    font-display: block;
+  }
+  #digiOut {
+    position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%);
+    text-align: center; pointer-events: none; max-width: 86%; overflow: hidden;
+  }
+  #digiOutMain {
+    font-family: "DigiCode", Menlo, monospace;
+    font-size: 64px; letter-spacing: 0.14em; line-height: 1.1;
+    color: var(--holo); text-shadow: 0 0 18px var(--holo-dim), 0 0 42px var(--holo-dim);
+    white-space: nowrap;
+  }
+  #digiOutEcho {
+    margin-top: 6px; font-size: 11px; letter-spacing: 0.3em;
+    color: var(--holo); opacity: 0.55; text-transform: uppercase;
+  }
 </style>
 </head>
 <body>
@@ -242,6 +262,7 @@
       <div class="corner" id="c-tl"></div><div class="corner" id="c-tr"></div>
       <div class="corner" id="c-bl"></div><div class="corner" id="c-br"></div>
       <div id="scanline"></div>
+      <div id="digiOut" style="display:none"><div id="digiOutMain"></div><div id="digiOutEcho"></div></div>
     </div>
     <div id="quickBar" class="off">
       <span id="qRatios" style="display:flex;gap:6px;"></span>
@@ -470,6 +491,11 @@
       <input type="range" class="ringCtl" data-ring="3" data-k="r" min="-80" max="80" value="-12" style="width:100%">
       <div class="row"><label>Z 轴朝上（躺平）</label><input type="checkbox" class="ringZU" data-ring="3"></div>
     </details>
+
+    <h2>数码文字</h2>
+    <div class="row"><label>显示文字（A-Z）</label></div>
+    <input type="text" id="inpDigi" spellcheck="false" placeholder="如 bu ma / DIGIMON">
+    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">输入的字母会以数码文字（DigiCode）显示在舞台下方，空格分组；数字暂无对应字形将不显示。全息环「数据弧」的环上文字同步使用数码文字字形。</div>
 
     <h2>背景</h2>
     <div class="row"><label>启用背景</label><input type="checkbox" id="inpBg" checked></div>

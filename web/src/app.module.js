@@ -30,6 +30,10 @@
  *          ① 看得见 —— 骨架叠加显示（穿透、按层级渐变、跟随配色）+ 面板骨骼树
  *          ② 动得了 —— 姿势模式点选某根骨、拖动旋转，蒙皮跟着变形；三轴滑杆精调 + 单骨/全部重置
  *          ③ 演得出 —— 整体姿态打成关键帧，帧间 slerp 播放，并随导出网页带走（烘焙进 GLB 动画轨道）
+ * 1.3.5.11(b34): 数码文字（DigiCode）——内嵌官方字形字体 web/lib/digicode.ttf（Mooshimon 2009，
+ *          A-Z/a-z 同形映射 53 字形）：① 面板新栏目「数码文字」输入即显影在舞台下方（#digiOut）
+ *          ② 全息环「数据弧」环上文字改用 DigiCode 字形（自由 SVG + 经典 3D canvas 双路）
+ *          ③ 数字/汉字无对应字形自动回退（canvas 回 Menlo、SVG 回浏览器字体）
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -1971,6 +1975,31 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       }, 160);
     };
   });
+  // 数码文字（b34）：面板输入 → 舞台下方以 DigiCode 字形显影；字体就绪后重画数据弧（SVG+3D 双路）
+  (function () {
+    var inpDigi = $("inpDigi");
+    var out = $("digiOut"), main = $("digiOutMain"), echo = $("digiOutEcho");
+    if (!inpDigi || !out) return;
+    function applyDigi() {
+      var raw = inpDigi.value || "";
+      var shown = raw.toUpperCase().replace(/[^A-Z ]/g, "").replace(/\s+/g, " ");
+      main.textContent = shown;
+      echo.textContent = shown ? raw : "";
+      out.style.display = shown ? "" : "none";
+    }
+    inpDigi.oninput = applyDigi;
+    applyDigi();
+    if (document.fonts && document.fonts.load) {
+      document.fonts.load('20px "DigiCode"').then(function () {
+        // 字体就绪：自由(SVG)版直接重灌 innerHTML；经典(3D)版重画纹理
+        [1, 2, 3].forEach(function (n) {
+          var w = $("ringWrap" + n);
+          if (w) w.innerHTML = buildRingSVG(state.rings[n - 1].style, n, state.hideCenterDot, state.rings[n - 1]);
+        });
+        rebuildRing3D();
+      }).catch(function () {});
+    }
+  })();
   // 环模式（1.2.7）：自由变换 / 经典 1.0（3D 场景环）
   $("selRingMode").value = state.ringMode;
   $("selRingMode").onchange = function () {

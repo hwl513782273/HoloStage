@@ -108,7 +108,7 @@ export function buildRingSVG(style, seed, hideDot, opts) {
       '<g class="ringSpinRev">' + arcIn + opp(arcIn) + '</g>' +
       '<g class="ringSpinSlow">' +
         '<path id="' + dtp + '" d="M 300 124 a 176 176 0 1 1 -0.01 0" fill="none"/>' +
-        '<text font-size="20" fill="currentColor" opacity="0.75" letter-spacing="4"><textPath href="#' + dtp + '">' +
+        '<text font-size="21" fill="currentColor" opacity="0.75" letter-spacing="4" font-family="DigiCode, Menlo, monospace"><textPath href="#' + dtp + '">' +
           escText(opts && opts.text != null && opts.text !== "" ? opts.text : DATA_TEXT) +
           '</textPath></text>' +
       '</g>';
