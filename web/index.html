@@ -441,6 +441,8 @@
         <option value="latin">英文</option>
         <option value="greek">希腊文</option>
       </select>
+      <div class="row"><label>自定义颜色</label><input type="checkbox" class="ringCus" data-ring="1"></div>
+      <input type="color" class="ringCol" data-ring="1" value="#3fb9ff" disabled style="width:100%;height:26px;padding:1px;background:none;border:1px solid var(--ui-line);border-radius:4px;">
       <div class="row"><label>位置 X</label><span id="valR1X">0</span></div>
       <input type="range" class="ringCtl" data-ring="1" data-k="x" min="-500" max="500" value="0" style="width:100%">
       <div class="row"><label>位置 Y</label><span id="valR1Y">0</span></div>
@@ -470,6 +472,8 @@
         <option value="latin">英文</option>
         <option value="greek">希腊文</option>
       </select>
+      <div class="row"><label>自定义颜色</label><input type="checkbox" class="ringCus" data-ring="2"></div>
+      <input type="color" class="ringCol" data-ring="2" value="#3fb9ff" disabled style="width:100%;height:26px;padding:1px;background:none;border:1px solid var(--ui-line);border-radius:4px;">
       <div class="row"><label>位置 X</label><span id="valR2X">0</span></div>
       <input type="range" class="ringCtl" data-ring="2" data-k="x" min="-500" max="500" value="0" style="width:100%">
       <div class="row"><label>位置 Y</label><span id="valR2Y">0</span></div>
@@ -499,6 +503,8 @@
         <option value="latin">英文</option>
         <option value="greek">希腊文</option>
       </select>
+      <div class="row"><label>自定义颜色</label><input type="checkbox" class="ringCus" data-ring="3"></div>
+      <input type="color" class="ringCol" data-ring="3" value="#3fb9ff" disabled style="width:100%;height:26px;padding:1px;background:none;border:1px solid var(--ui-line);border-radius:4px;">
       <div class="row"><label>位置 X</label><span id="valR3X">0</span></div>
       <input type="range" class="ringCtl" data-ring="3" data-k="x" min="-500" max="500" value="0" style="width:100%">
       <div class="row"><label>位置 Y</label><span id="valR3Y">0</span></div>
@@ -595,6 +601,8 @@
     <input type="range" id="inpDelay" min="20" max="500" value="100" style="width:100%">
     <div class="row" style="margin-top:6px;"><label>画面带右下角标题</label><input type="checkbox" id="inpExpTitle" checked></div>
     <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">「模型区」导出 PNG / GIF 时把右下角标题 + 渐变线 + 均衡条画进画面（跟随配色）；「整个窗口」模式本来就含界面。导出网页自带标题，不受此开关影响。</div>
+    <div class="row" style="margin-top:6px;"><label>画面带 HUD 叠加层</label><input type="checkbox" id="inpExpHud"></div>
+    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">「模型区」导出 PNG / GIF 时把四角括号、扫描线、数码文字显影画进画面（跟随配色与当前状态；场景节里关掉 HUD 时导出也不会带）。</div>
     <button id="btnGif">导出 GIF 动画</button>
     <button id="btnSeq">导出 PNG 帧序列</button>
     <button id="btnShot">导出当前帧 PNG</button>

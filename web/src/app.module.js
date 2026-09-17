@@ -303,7 +303,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     });
     ring3dMeshes = [];
     state.rings.forEach(function (rg, i) {
-      var made = drawRingCanvas(rg.style, partColor("ring" + (i + 1)), state.hideCenterDot, rg);
+      var made = drawRingCanvas(rg.style, ringColorOf(i), state.hideCenterDot, rg);
       var tex = new THREE.CanvasTexture(made.canvas);
       tex.anisotropy = 4;
       var mesh = new THREE.Mesh(
@@ -378,9 +378,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     ringMode: "classic",                 // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）；b29 默认经典
     ringAnchor: "world",                 // 1.2.8: 经典模式环心 model=模型中点（跟随模型）| world=世界中心；b29 默认世界中心（1.2.7 行为）
     rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5；z/zu 见 1.3.2；text=数据弧文字 1.3.5）
-      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "seg",  text: DATA_TEXT, script: "digi" },
-      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "dial", text: DATA_TEXT, script: "digi" },
-      { x: 0, y: 0, z: 0, s: 86,  p: 18, r: -12, w: 0, zu: false, style: "dash", text: DATA_TEXT, script: "digi" }
+      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "seg",  text: DATA_TEXT, script: "digi", cus: false, color: "" },
+      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "dial", text: DATA_TEXT, script: "digi", cus: false, color: "" },
+      { x: 0, y: 0, z: 0, s: 86,  p: 18, r: -12, w: 0, zu: false, style: "dash", text: DATA_TEXT, script: "digi", cus: false, color: "" }
     ]
   };
   var RING_DEFAULTS = [
@@ -783,10 +783,15 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     { id: "panel",  label: "控制面板" }
   ];
   function partColor(id) { return uiColors[id] || PRESETS[currentPreset].css; }
+  /* b39: 环颜色 —— 勾「自定义颜色」用自选色，否则跟随配色方案的部件色 */
+  function ringColorOf(i) {
+    var rg = state.rings[i];
+    return (rg && rg.cus && rg.color) ? rg.color : partColor("ring" + (i + 1));
+  }
   var scanEl = $("scanline"), titleRuleEl = $("titleRule");
   function applyUIColors() {
-    // 三环（SVG 用 currentColor）
-    ringWraps.forEach(function (w, i) { w.style.color = partColor("ring" + (i + 1)); });
+    // 三环（SVG 用 currentColor）—— b39: 勾了自定义颜色用自选色
+    ringWraps.forEach(function (w, i) { w.style.color = ringColorOf(i); });
     // 3D 全息环（1.2.7）：换色即重建纹理
     if (ring3dMeshes.length) rebuildRing3D();
     // 标题 + 标题下划线
@@ -1968,6 +1973,27 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       rebuildRing3D();
     };
   });
+  /* b39: 环自定义颜色 —— 勾「自定义颜色」启用取色器，换色即重上色（SVG currentColor + 3D 纹理重建）；
+   * 未勾时跟随配色方案。取色器初始值同步当前部件色，模板系统自动捕获（class+data-ring 键）。 */
+  [1, 2, 3].forEach(function (n) {
+    var cus = document.querySelector('.ringCus[data-ring="' + n + '"]');
+    var col = document.querySelector('.ringCol[data-ring="' + n + '"]');
+    if (!cus || !col) return;
+    var rg = state.rings[n - 1];
+    if (!rg.color) col.value = partColor("ring" + n); // 初始值 = 当前部件色
+    cus.checked = !!rg.cus;
+    col.disabled = !rg.cus;
+    cus.onchange = function () {
+      rg.cus = this.checked;
+      col.disabled = !rg.cus;
+      if (rg.cus && !rg.color) rg.color = col.value;
+      applyUIColors();
+    };
+    col.oninput = function () {
+      rg.color = this.value;
+      if (rg.cus) applyUIColors();
+    };
+  });
   /* 数据弧文字（1.3.5）：每环独立可改。输入即重建自由(SVG)版；经典(3D)版要重画 1200² 画布，
    * 故做 160ms 防抖，避免连打字时反复重建三张纹理卡顿。 */
   [1, 2, 3].forEach(function (n) {
@@ -2152,6 +2178,12 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       state.rings[n - 1].zu = def.zu; // 1.3.2: Z 轴朝上一并复位
       var zcb = document.querySelector('.ringZU[data-ring="' + n + '"]');
       if (zcb) zcb.checked = !!def.zu;
+      state.rings[n - 1].cus = false; // b39: 自定义颜色一并复位（回跟随配色）
+      var ccb = document.querySelector('.ringCus[data-ring="' + n + '"]');
+      var ccl = document.querySelector('.ringCol[data-ring="' + n + '"]');
+      if (ccb) ccb.checked = false;
+      if (ccl) ccl.disabled = true;
+      applyUIColors(); // 复位颜色 + 重建 3D 环纹理
       applyRings();
       statusEl.textContent = "RING " + n + " RESET";
     };
@@ -2291,6 +2323,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       cv.width = canvas.width; cv.height = canvas.height; // 导出期间像素比=1，即导出尺寸
       var g = cv.getContext("2d");
       g.drawImage(canvas, 0, 0, cv.width, cv.height);
+      drawExportHUD(g, cv.width, cv.height); // b39: HUD 叠加层（勾选才画）
       drawExportBadge(g, cv.width, cv.height, i * Math.max(20, state.delay)); // b37: 右下角标题随帧推进
       onFrame(i, cv);
       i++;
@@ -2357,6 +2390,75 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     var cv = document.createElement("canvas");
     cv.width = w; cv.height = h;
     drawExportBadge(cv.getContext("2d"), w, h, tMs || 0);
+    return cv.toDataURL("image/png");
+  };
+
+  /* ---------- b39: 导出画面 HUD 叠加层 ----------
+   * 「模型区」导出只截 WebGL canvas → HUD（四角括号 / 扫描线 / 数码文字显影）在 2D 画布上复刻。
+   * 勾「画面带 HUD 叠加层」才画；场景节关掉 HUD（#hud 隐藏）时也不画 —— 与屏幕所见一致。
+   * 颜色取自屏幕元素计算样式（跟随配色），尺寸按 k = h / stageH 等比缩放。 */
+  function drawExportHUD(g, w, h) {
+    var ck = $("inpExpHud");
+    if (!ck || !ck.checked) return;
+    var hudEl = $("hud");
+    if (hudEl && getComputedStyle(hudEl).display === "none") return;
+    var k = h / (stageH || h);
+    if (!(k > 0)) k = 1;
+    g.save();
+    // 1) 四角括号（.corner：34px 方框只留两边，内缩 14px，border 2px var(--holo-dim)）
+    var cc = getComputedStyle($("c-tl")).borderTopColor;
+    g.strokeStyle = cc; g.lineWidth = Math.max(1, 2 * k); g.globalAlpha = 0.9;
+    var m = 14 * k, L = 34 * k;
+    g.beginPath(); g.moveTo(m, m + L); g.lineTo(m, m); g.lineTo(m + L, m); g.stroke();                    // 左上
+    g.beginPath(); g.moveTo(w - m - L, m); g.lineTo(w - m, m); g.lineTo(w - m, m + L); g.stroke();        // 右上
+    g.beginPath(); g.moveTo(m, h - m - L); g.lineTo(m, h - m); g.lineTo(m + L, h - m); g.stroke();        // 左下
+    g.beginPath(); g.moveTo(w - m - L, h - m); g.lineTo(w - m, h - m); g.lineTo(w - m, h - m - L); g.stroke(); // 右下
+    g.globalAlpha = 1;
+    // 2) 扫描线（#scanline：repeating-linear-gradient 0deg，透明 0-3px、rgba(63,185,255,.02) 3-4px）
+    var step = Math.max(2, 4 * k), band = 3 * k;
+    g.fillStyle = "rgba(63,185,255,0.02)";
+    for (var y = 0; y < h; y += step) g.fillRect(0, y, w, band);
+    // 3) 数码文字显影（#digiOut 可见时：主行 DigiCode 64px + 回显行 11px，居中于 bottom 12%）
+    var out = $("digiOut"), main = $("digiOutMain"), echo = $("digiOutEcho");
+    if (out && out.style.display !== "none" && main && main.textContent) {
+      var dc = getComputedStyle(main).color;
+      var fs = 64 * k, ls = 0.14 * fs;
+      g.font = fs + "px 'DigiCode', Menlo, monospace";
+      g.textBaseline = "alphabetic"; g.textAlign = "left";
+      g.fillStyle = dc;
+      g.shadowColor = dc; g.shadowBlur = 18 * k;
+      var chars = main.textContent.split(""), tw = 0, ci;
+      for (ci = 0; ci < chars.length; ci++) tw += g.measureText(chars[ci]).width + ls;
+      tw -= ls;
+      var tx = w / 2 - tw / 2, ty = h - h * 0.12 - 20 * k;
+      for (ci = 0; ci < chars.length; ci++) {
+        g.fillText(chars[ci], tx, ty);
+        tx += g.measureText(chars[ci]).width + ls;
+      }
+      g.shadowBlur = 0;
+      var eTxt = echo ? echo.textContent : "";
+      if (eTxt) {
+        g.globalAlpha = 0.55;
+        g.font = (11 * k) + "px Menlo, monospace";
+        g.fillStyle = dc;
+        var ets = 0.3 * 11 * k, ew = 0, ei;
+        for (ei = 0; ei < eTxt.length; ei++) ew += g.measureText(eTxt.charAt(ei)).width + ets;
+        ew -= ets;
+        var ex = w / 2 - ew / 2, ey = h - h * 0.12 - 3 * k;
+        for (ei = 0; ei < eTxt.length; ei++) {
+          g.fillText(eTxt.charAt(ei), ex, ey);
+          ex += g.measureText(eTxt.charAt(ei)).width + ets;
+        }
+        g.globalAlpha = 1;
+      }
+    }
+    g.restore();
+  }
+  // 验证钩子：把 HUD 叠加层画到独立画布导出 dataURL（黑盒测试用）
+  window.holoHudTest = function (w, h) {
+    var cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    drawExportHUD(cv.getContext("2d"), w, h);
     return cv.toDataURL("image/png");
   };
 
@@ -2594,6 +2696,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       cv.width = canvas.width; cv.height = canvas.height;
       var g = cv.getContext("2d");
       g.drawImage(canvas, 0, 0, cv.width, cv.height);
+      drawExportHUD(g, cv.width, cv.height); // b39: HUD 叠加层（勾选才画）
       drawExportBadge(g, cv.width, cv.height, performance.now());
       var d = cv.toDataURL("image/png");
       restore();
