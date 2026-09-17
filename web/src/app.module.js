@@ -456,21 +456,92 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
    * 旧代码用 seen 按骨架去重 → 同骨架第 2~N 张网格拿不到更新，bindMatrix 停在
    * GLTFLoader 的单位阵，而 attached 模式每帧又把 bindMatrixInverse 同步成
    * matrixWorld⁻¹ → 蒙皮输出被整体放大回文件尺度（实测 Lady Devimon 等
-   * 55/131 个多网格模型「加载即变形」，静止与播放态都炸）。改为：inverses 每骨架
-   * 重算一次，bind 矩阵对每张网格都刷新。 */
+   * 55/131 个多网格模型「加载即变形」，静止与播放态都炸）。改为：bind 矩阵对
+   * 每张网格都刷新。
+   * b42（1.3.5.17）：b40 的 calculateInverses()（bind=rest）对「rest≠bind」的
+   * 模型（Sketchfab rip 常态：Omnimon 披风、Zhuqiaomon 等）静止自洽但【播放必炸】
+   * —— boneMatrix = R·pose·rest⁻¹·R⁻¹，而文件授权的是 pose·ibm，rest⁻¹≠ibm
+   * 时蒙皮整体扭曲（Zhuqiaomon clip0 t=0 即 diag 11.7 vs bind 2.71）。
+   * 修法：boneInverses = 文件 ibm · R⁻¹（R=归一化根矩阵）——attached/detached
+   * 两种 bindMode 下都精确还原 glTF 语义 v' = R·pose·ibm·M_file·v。
+   * 但部分 rip 的文件 ibm 空间异常（Jetdragon/Magnamon 实测静止 diag 39/37181），
+   * 不能一刀切 —— 逐骨架自适应：先算 B 方案（bind=rest，静止=raw）取 diagB，
+   * 再算 A 方案（文件 ibm·R⁻¹，静止=rest 重蒙皮）取 diagA，diagA 落在
+   * [0.5·diagB, max(4.2, 1.6·diagB)] 内才采用 A，否则退回 B（b40 行为，
+   * 由片段过滤器兜底停用动画）。验证用直接结果指标（静止 CPU 蒙皮 diag），
+   * 不用代理指标（b41 v3 的 boneM≈I 校验不可靠）。 */
+  function cpuSkinDiagFor(rootObj, sk) {
+    rootObj.updateMatrixWorld(true);
+    if (sk.update) sk.update();
+    var gmin = [1e9, 1e9, 1e9], gmax = [-1e9, -1e9, -1e9], found = 0;
+    var v = new THREE.Vector3();
+    rootObj.traverse(function (o) {
+      if (!o.isSkinnedMesh || o.skeleton !== sk) return;
+      found++;
+      var si = o.geometry.attributes.skinIndex, sw = o.geometry.attributes.skinWeight;
+      var pos = o.geometry.attributes.position, bm = sk.boneMatrices;
+      var step = Math.max(1, Math.floor(pos.count / 1200));
+      for (var k = 0; k < pos.count; k += step) {
+        v.set(pos.getX(k), pos.getY(k), pos.getZ(k)).applyMatrix4(o.bindMatrix);
+        var x = 0, y = 0, z = 0;
+        for (var j = 0; j < 4; j++) {
+          var w = j === 0 ? sw.getX(k) : (j === 1 ? sw.getY(k) : (j === 2 ? sw.getZ(k) : sw.getW(k)));
+          if (w === 0) continue;
+          var b = (j === 0 ? si.getX(k) : (j === 1 ? si.getY(k) : (j === 2 ? si.getZ(k) : si.getW(k)))) * 16;
+          var vx = v.x, vy = v.y, vz = v.z;
+          x += w * (bm[b] * vx + bm[b + 4] * vy + bm[b + 8] * vz + bm[b + 12]);
+          y += w * (bm[b + 1] * vx + bm[b + 5] * vy + bm[b + 9] * vz + bm[b + 13]);
+          z += w * (bm[b + 2] * vx + bm[b + 6] * vy + bm[b + 10] * vz + bm[b + 14]);
+        }
+        v.set(x, y, z).applyMatrix4(o.bindMatrixInverse).applyMatrix4(o.matrixWorld);
+        var arr = [v.x, v.y, v.z];
+        for (var c = 0; c < 3; c++) {
+          if (arr[c] < gmin[c]) gmin[c] = arr[c];
+          if (arr[c] > gmax[c]) gmax[c] = arr[c];
+        }
+      }
+    });
+    if (!found) return NaN;
+    var dx = gmax[0] - gmin[0], dy = gmax[1] - gmin[1], dz = gmax[2] - gmin[2];
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
   function rebindSkinnedMeshes(obj) {
     if (!obj || !obj.isObject3D) return;
     obj.updateMatrixWorld(true);
-    var seen = new Set();
+    var skins = [];
     obj.traverse(function (o) {
-      if (!o.isSkinnedMesh || !o.skeleton || !o.skeleton.bones.length) return;
-      if (!seen.has(o.skeleton)) {
-        seen.add(o.skeleton);
-        o.skeleton.calculateInverses();  // 以当前静止骨骼世界矩阵为绑定基准（每骨架一次）
-      }
-      o.bindMatrix.copy(o.matrixWorld);  // bind 矩阵对是每网格独立的，必须逐张刷新
+      if (o.isSkinnedMesh && o.skeleton && o.skeleton.bones.length) skins.push(o);
+    });
+    if (!skins.length) return;
+    var R = obj.matrixWorld.clone(), Rinv = R.clone().invert();
+    /* b40: bind 矩阵对是每网格独立的，必须逐张刷新（先全刷，后面验证才有效） */
+    skins.forEach(function (o) {
+      o.bindMatrix.copy(o.matrixWorld);
       o.bindMatrixInverse.copy(o.matrixWorld).invert();
     });
+    var tmp = new THREE.Matrix4();
+    var seen = new Set();
+    skins.forEach(function (o) {
+      var sk = o.skeleton;
+      if (seen.has(sk)) return;
+      seen.add(sk);
+      /* 文件 ibm 只在首次 rebind 时有效（calculateInverses 会覆盖）——先留底 */
+      if (!sk.holoFileIbm || sk.holoFileIbm.length !== sk.bones.length) {
+        sk.holoFileIbm = sk.boneInverses.map(function (m) { return m.clone(); });
+      }
+      sk.calculateInverses();               // B 方案：bind=rest，静止=raw（b40 行为）
+      var diagB = cpuSkinDiagFor(obj, sk);
+      for (var i = 0; i < sk.boneInverses.length; i++) {
+        sk.boneInverses[i].copy(sk.holoFileIbm[i]).multiply(Rinv);  // A 方案：ibm·R⁻¹
+      }
+      var diagA = cpuSkinDiagFor(obj, sk);
+      var okA = isFinite(diagA) && diagA > 0 &&
+                diagA <= Math.max(4.2, diagB * 1.6) && diagA >= diagB * 0.5;
+      if (!window.__rebindLog) window.__rebindLog = [];
+      window.__rebindLog.push({ bones: sk.bones.length, diagB: +diagB.toFixed(2), diagA: +diagA.toFixed(2), okA: okA });
+      if (!okA) sk.calculateInverses();     // A 不可用 → 退回 B（b40 行为）
+    });
+    obj.updateMatrixWorld(true);
   }
 
   /* ---------- 全彩平滑法线（1.2.9）----------
@@ -1091,12 +1162,13 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     $("btnPlay").textContent = "暂停";
     ui.style.display = ""; hint.style.display = "none";
     if (animStaticOnly) {
-      // b40: 全部片段播放即变形 —— 停在绑定姿态，不自动播放；用户可手动选播
+      // b40: 全部片段播放即变形 —— 停在绑定姿态，不自动播放
+      // b42: playAnimClip 入口已拦截手动播放（点播即炸的坏片段不再递给用户）
       anim.paused = true;
       $("btnPlay").textContent = "播放";
       $("inpAProg").value = 0; $("valAProg").textContent = "0%";
       if (mixer) mixer.timeScale = 0;
-      statusEl.textContent = "动作数据与本骨架不匹配（播放会变形）—— 已停在绑定姿态，可在上方列表手动选播";
+      statusEl.textContent = "动作数据与本骨架不匹配（播放会变形）—— 已停在绑定姿态并禁止播放";
       return;
     }
     playAnimClip(0);
@@ -1163,7 +1235,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       animDropped = 0;
       animStaticOnly = true;
       statusEl.textContent = "检测到 " + animRawTotal + " 个动作均与本骨架不匹配（播放会变形），"
-        + "已停在绑定姿态；可在动画面板手动选播";
+        + "已停在绑定姿态并禁止播放";
     }
     window.holoAnimClips = function () { return { kept: animClips, all: clips }; }; // 1.3.5.3 自检取证用
     refreshAnimUI();
@@ -1278,6 +1350,8 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     var bindDiag = cpuDiag();
     if (!(bindDiag > 0) || !isFinite(bindDiag)) { restore(); return clips; }
     var probeMixer = new THREE.AnimationMixer(root);
+    /* b42 临时取证：记录每个片段的采样 diag */
+    if (!window.__filterLog) window.__filterLog = [];
     var keep = [];
     for (var i = 0; i < clips.length; i++) {
       var c = clips[i], bad = false;
@@ -1291,9 +1365,11 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
           /* 0%/2% 抓「长片段开头」：0.1 倍速自动播放 1s 才推进长片段的 1%~5%，
            * 实测 Jetdragon/Omnimon 的爆炸窗口就在开头（旧采样从 5% 起漏抓）。 */
           var fracs = [0.0, 0.02, 0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95];
+          var __logSamples = [];
           for (var fi = 0; fi < fracs.length && dur > 0; fi++) {
             probeMixer.setTime(fracs[fi] * dur);
             var d = cpuDiag();
+            __logSamples.push(+d.toFixed(2));
             /* b40: 双阈值 —— 相对 2.5×bindDiag 之外加绝对上限 4.2（几何归一化后
              * 包围盒对角线恒 ∈ [2.2, 3.81]，bind 本身偏大时相对阈值会放行炸片段，
              * 实测 Magnamon bind=3.41、片段炸到 6.62 仍被 2.5× 放行）；
@@ -1301,6 +1377,7 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
              * 旧版只查上界会放行。 */
             if (!isFinite(d) || d > 4.2 || d > bindDiag * 2.5 || d < bindDiag * 0.4) { bad = true; break; }
           }
+          window.__filterLog.push({ clip: (c.name || '?').slice(0, 20), bind: +bindDiag.toFixed(2), samples: __logSamples, bad: bad });
           action.stop();
           probeMixer.uncacheAction(c);
         } catch (e) { bad = false; }
@@ -1314,6 +1391,14 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
   }
   function playAnimClip(idx) {
     if (!mixer || !animClips[idx]) return;
+    /* b42: staticOnly（全部片段与骨架不匹配）时禁止手动播放 —— 兜底列表里的
+     * 片段是「已判坏」的原始数据（ReArise Zhuqiaomon/Gallantmon 实测点播即炸，
+     * 文件 ibm 共轭也救不了：强制 ibm·R⁻¹ 播放 diag 仍 11.87），旧文案
+     * 「可手动选播自担风险」等于把炸弹递给用户。 */
+    if (animStaticOnly) {
+      statusEl.textContent = "动作数据与本骨架不匹配（播放会变形）—— 已禁止播放";
+      return;
+    }
     mixer.stopAllAction();
     animClipIdx = idx;
     var clip = animClips[idx];
