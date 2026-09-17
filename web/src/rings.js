@@ -6,6 +6,28 @@
 /* 数据弧上的环绕文字默认值（1.3.5：可由面板改写，见 opts.text） */
 export var DATA_TEXT = "HOLOSTAGE // SYS.LINK // 055-8821 // ONLINE";
 
+/* b35: 拉丁字母 → 希腊字母音译（环上文字「希腊文」模式用）；非字母原样保留 */
+var GREEK_MAP = { A: "Α", B: "Β", C: "Κ", D: "Δ", E: "Ε", F: "Φ", G: "Γ", H: "Η", I: "Ι", J: "Ι",
+  K: "Κ", L: "Λ", M: "Μ", N: "Ν", O: "Ο", P: "Π", Q: "Θ", R: "Ρ", S: "Σ", T: "Τ",
+  U: "Υ", V: "Β", W: "Ω", X: "Χ", Y: "Ψ", Z: "Ζ" };
+
+export function toGreek(s) {
+  var up = String(s).toUpperCase(), out = "";
+  for (var i = 0; i < up.length; i++) out += GREEK_MAP[up.charAt(i)] || up.charAt(i);
+  return out;
+}
+
+/* b35: 文字循环补齐到正好绕满一圈的字符数组（rings.js SVG 与 rings3d.js 画布共用）。
+ * stepPx 单字步距上限；不足一圈用原文循环补齐（补齐处垫两个空格分隔），返回 length = 圆周/步距。 */
+export function fillCircleText(text, circ, stepPx) {
+  var t = String(text || "") || " ";
+  var n = Math.max(1, Math.round(circ / (stepPx || 16.4)));
+  var unit = t.replace(/\s+$/, "") + "  ";
+  var out = "";
+  while (out.length < n) out += unit;
+  return out.substring(0, n).split("");
+}
+
 /* 用户输入要进 SVG 文本节点 → 必须转义，否则 & / < 会让整个环解析失败 */
 function escText(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -92,7 +114,6 @@ export function buildRingSVG(style, seed, hideDot, opts) {
       '</g>' + (hideDot ? '' : '<circle cx="300" cy="300" r="7" fill="currentColor" opacity="0.9"/>');
 
   } else { /* data 数据弧（1.3.5：1/4 弧绕圆心转 180° → 对角两段） */
-    var dtp = uid + "lbl";
     // 每条弧取整角（90° / 60° / 25°），dasharray 按周长 2πr 折算：
     //   r262 → 1646.2，90° = 411.5 ｜ r234 → 1470.3，60° = 245.0 ｜ r206 → 1294.3，25° = 89.9
     // 第一条弧落在右下（3 点 → 6 点）；第二条绕圆心旋转 180°（点对称）→ 落在左上。
@@ -103,15 +124,23 @@ export function buildRingSVG(style, seed, hideDot, opts) {
       '<circle cx="300" cy="300" r="234" fill="none" stroke="currentColor" stroke-width="2" stroke-opacity="0.6" stroke-dasharray="245 1225.3"/>' +
       '<circle cx="300" cy="300" r="206" fill="none" stroke="currentColor" stroke-width="8" stroke-opacity="0.28" stroke-dasharray="89.9 1204.4" stroke-linecap="round"/>' +
       '<circle cx="534" cy="300" r="4" fill="currentColor" opacity="0.9"/>';
+    // b35: 文字绕完整一圈 —— 弃用 textPath（只排一段），逐字符旋转均匀排布铺满 360°；
+    // 字形三选：digi 数码文字（DigiCode）/ latin 英文（Menlo）/ greek 希腊文（音译 + Menlo）
+    var RR = 176, CIRC = 2 * Math.PI * RR;
+    var bScript = (opts && opts.script) || "digi";
+    var bBase = String(opts && opts.text != null && opts.text !== "" ? opts.text : DATA_TEXT) || DATA_TEXT;
+    if (bScript === "greek") bBase = toGreek(bBase);
+    var bFam = bScript === "digi" ? "DigiCode, Menlo, monospace" : "Menlo, monospace";
+    var bChars = fillCircleText(bBase, CIRC);
+    var bStep = 360 / bChars.length, bTxt = "";
+    for (var k = 0; k < bChars.length; k++) {
+      bTxt += '<text x="300" y="' + (300 - RR) + '" text-anchor="middle" font-size="21" fill="currentColor" opacity="0.75" font-family="' + bFam +
+        '" transform="rotate(' + (k * bStep).toFixed(3) + ' 300 300)">' + escText(bChars[k]) + '</text>';
+    }
     inner =
       '<g class="ringSpin">' + arcOut + opp(arcOut) + '</g>' +
       '<g class="ringSpinRev">' + arcIn + opp(arcIn) + '</g>' +
-      '<g class="ringSpinSlow">' +
-        '<path id="' + dtp + '" d="M 300 124 a 176 176 0 1 1 -0.01 0" fill="none"/>' +
-        '<text font-size="21" fill="currentColor" opacity="0.75" letter-spacing="4" font-family="DigiCode, Menlo, monospace"><textPath href="#' + dtp + '">' +
-          escText(opts && opts.text != null && opts.text !== "" ? opts.text : DATA_TEXT) +
-          '</textPath></text>' +
-      '</g>';
+      '<g class="ringSpinSlow">' + bTxt + '</g>';
   }
 
   return '<svg viewBox="0 0 600 600" style="display:block;width:100%;height:100%;overflow:visible">' + inner + '</svg>';

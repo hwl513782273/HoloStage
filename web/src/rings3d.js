@@ -5,7 +5,7 @@
  * 返回 { canvas, spin }：spin = 环平面内自转角速度 rad/s（正=顺时针），移植自 rings.js 的 CSS 动画。
  */
 
-import { DATA_TEXT } from "./rings.js"; // 数据弧文字默认值：与 rings.js 共用同一份
+import { DATA_TEXT, toGreek, fillCircleText } from "./rings.js"; // 数据弧文字默认值/整圈补齐/希腊音译：与 rings.js 共用同一份
 
 export var RING3D_SIZE = 3.8; // 世界直径：机位 dist≈4.875 + fov45 下 ≈ 画面高度 94%（与 1.0 一致）
 
@@ -37,14 +37,14 @@ export function drawRingCanvas(style, color, hideDot, opts) {
     x.beginPath(); x.arc(rx, ry, r, 0, TAU);
     x.fillStyle = color; x.globalAlpha = alpha; x.fill(); x.globalAlpha = 1;
   }
-  function ringText(text, r, size, alpha, stepPx) {
+  function ringText(chars, r, size, alpha, fam) {
     x.fillStyle = color; x.globalAlpha = alpha;
-    x.font = size + "px 'DigiCode', Menlo, monospace"; // b34: 数据弧文字用 DigiCode 字形（未载入时回退 Menlo）
+    x.font = size + "px " + fam;
     x.textAlign = "center"; x.textBaseline = "middle";
-    var step = stepPx / r;
-    for (var k = 0; k < text.length; k++) {
+    var step = Math.PI * 2 / chars.length; // b35: 字符已补齐，均匀铺满整圈 360°
+    for (var k = 0; k < chars.length; k++) {
       x.save(); x.rotate(-Math.PI / 2 + k * step); x.translate(0, -r);
-      x.fillText(text.charAt(k), 0, 0); x.restore();
+      x.fillText(chars[k], 0, 0); x.restore();
     }
     x.globalAlpha = 1;
   }
@@ -121,9 +121,12 @@ export function drawRingCanvas(style, color, hideDot, opts) {
     x.save(); x.rotate(Math.PI); x.lineCap = "round"; dataArcs(); x.restore(); // 绕圆心转 180°（点对称 → 落在对角象限）
     x.lineCap = "butt";
     // 文字环不参与那 180° 旋转（转了会跑到左上且倒着写）
-    // 1.3.5：文字可由面板改写；步距按「约占 65% 圆周」自适应，长文字自动压紧
+    // b35: 文字绕完整一圈（与 rings.js 同步）；字形三选：digi 数码文字 / latin 英文 / greek 希腊文
     var dTxt = String((opts && opts.text) || DATA_TEXT) || DATA_TEXT;
-    ringText(dTxt, 176, 20, 0.75, Math.max(8, Math.min(16.4, 1105.8 * 0.65 / Math.max(1, dTxt.length))));
+    var dScript = (opts && opts.script) || "digi";
+    if (dScript === "greek") dTxt = toGreek(dTxt);
+    var dFam = dScript === "digi" ? "'DigiCode', Menlo, monospace" : "Menlo, monospace";
+    ringText(fillCircleText(dTxt, Math.PI * 2 * 176), 176, 20, 0.75, dFam);
   }
 
   return { canvas: cv, spin: ring3dSpin(style) };

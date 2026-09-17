@@ -378,9 +378,9 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     ringMode: "classic",                 // 1.2.6: free=自由变换 | classic=经典 1.0（绕中点平转）；b29 默认经典
     ringAnchor: "world",                 // 1.2.8: 经典模式环心 model=模型中点（跟随模型）| world=世界中心；b29 默认世界中心（1.2.7 行为）
     rings: [                             // 三环独立变换（w=偏航角，style=环样式 1.2.5；z/zu 见 1.3.2；text=数据弧文字 1.3.5）
-      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "seg",  text: DATA_TEXT },
-      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "dial", text: DATA_TEXT },
-      { x: 0, y: 0, z: 0, s: 86,  p: 18, r: -12, w: 0, zu: false, style: "dash", text: DATA_TEXT }
+      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "seg",  text: DATA_TEXT, script: "digi" },
+      { x: 0, y: 0, z: 0, s: 100, p: 0, r: 0, w: 0, zu: false, style: "dial", text: DATA_TEXT, script: "digi" },
+      { x: 0, y: 0, z: 0, s: 86,  p: 18, r: -12, w: 0, zu: false, style: "dash", text: DATA_TEXT, script: "digi" }
     ]
   };
   var RING_DEFAULTS = [
@@ -1956,6 +1956,16 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       state.rings[n - 1].style = this.value;
       ringWraps[n - 1].innerHTML = buildRingSVG(this.value, n, state.hideCenterDot, state.rings[n - 1]);
       rebuildRing3D(); // 1.2.7: 经典模式下换样式要重建 3D 环纹理
+    };
+  });
+  // 环上文字字形（b35）：digi 数码文字 / latin 英文 / greek 希腊文 —— 换字形即重灌 SVG + 重建 3D 纹理
+  Array.prototype.forEach.call(document.querySelectorAll(".ringScript"), function (sel) {
+    sel.value = state.rings[+sel.dataset.ring - 1].script || "digi";
+    sel.onchange = function () {
+      var n = +this.dataset.ring;
+      state.rings[n - 1].script = this.value;
+      ringWraps[n - 1].innerHTML = buildRingSVG(state.rings[n - 1].style, n, state.hideCenterDot, state.rings[n - 1]);
+      rebuildRing3D();
     };
   });
   /* 数据弧文字（1.3.5）：每环独立可改。输入即重建自由(SVG)版；经典(3D)版要重画 1200² 画布，
