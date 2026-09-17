@@ -365,6 +365,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             cleanupSnaps()
         case "pickBackground":
             pickBackgroundImage()
+        // b37: 设置模板持久化 —— JS 侧 localStorage 在 holo:// 自定义 scheme 下不可靠，
+        // 每次保存时整包同步到 Application Support/HoloStage/templates.json
+        case "saveTemplates":
+            if let json = body["json"] as? String {
+                let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("HoloStage", isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try? json.data(using: .utf8)?.write(to: dir.appendingPathComponent("templates.json"))
+            }
         default: break
         }
     }
@@ -639,6 +648,13 @@ extension AppDelegate: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let p = ProcessInfo.processInfo.environment["HOLO_MODEL"] {
             loadModel(at: URL(fileURLWithPath: p))
+        }
+        // b37: 设置模板回灌 —— 把 templates.json 内容注入页面（JSON 即 JS 字面量）
+        let tplURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("HoloStage/templates.json")
+        if let json = try? String(contentsOf: tplURL, encoding: .utf8),
+           !json.isEmpty, !json.contains("`") {
+            webView.evaluateJavaScript("window.holoTemplatesLoaded && window.holoTemplatesLoaded(\(json));", completionHandler: nil)
         }
         // 调试钩子（1.3.5.1）：HOLO_JS=任意 JS → 载入后 1s 在页面里执行，结果打印到 stdout。
         // 只用于黑盒取证（如切渲染模式），不参与业务逻辑，删掉不影响功能。

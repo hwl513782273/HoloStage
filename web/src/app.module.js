@@ -2010,6 +2010,119 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       }).catch(function () {});
     }
   })();
+  /* ---------- 设置模板（b37）：把面板全部控件快照成模板，可保存/应用/覆盖/改名/删除 ----------
+   * 捕获 = #panel 内所有 input/select 的值（按钮/文件框除外，无 id 控件用 类名+data 属性 做稳定键）；
+   * 应用 = 先全部写回值，再统一派发 input+change，让既有 handler 自己重建（环/配色/3D 纹理等）。
+   * 持久化：浏览器走 localStorage；App 内自定义 scheme 下 localStorage 不可靠 → 同时经原生桥
+   * 写 ~/Library/Application Support/HoloStage/templates.json，didFinish 时回灌（holoTemplatesLoaded）。 */
+  var TPL_KEY = "holostage_templates_v1";
+  var tplCache = null; // 内存真值；null = 尚未初始化
+  function tplLoadRaw() {
+    if (tplCache) return tplCache;
+    try { tplCache = JSON.parse(localStorage.getItem(TPL_KEY) || "[]") || []; }
+    catch (e) { tplCache = []; }
+    return tplCache;
+  }
+  function tplPersist() {
+    try { localStorage.setItem(TPL_KEY, JSON.stringify(tplCache)); } catch (e) { /* 隐私模式等 → 只存内存 */ }
+    if (bridge) bridge.postMessage({ type: "saveTemplates", json: JSON.stringify(tplCache) });
+  }
+  window.holoTemplatesLoaded = function (arr) { // App 启动时原生回灌（覆盖 localStorage 版本）
+    if (!Array.isArray(arr)) return;
+    tplCache = arr;
+    try { localStorage.setItem(TPL_KEY, JSON.stringify(arr)); } catch (e) {}
+    renderTplList();
+  };
+  function ctlKey(c) {
+    if (c.id) return "#" + c.id;
+    var ds = [];
+    if (c.dataset) for (var k in c.dataset) ds.push(k + "=" + c.dataset[k]);
+    return c.tagName.toLowerCase() + "." + String(c.className).trim().split(/\s+/).join(".") + (ds.length ? "[" + ds.sort().join(",") + "]" : "");
+  }
+  function tplPanelControls() {
+    return Array.prototype.filter.call(
+      document.querySelectorAll("#panel input, #panel select"),
+      function (c) {
+        var t = (c.getAttribute("type") || "").toLowerCase();
+        return t !== "file" && t !== "button" && c.id !== "inpTplName";
+      });
+  }
+  function tplCapture() {
+    var snap = { v: 1, controls: {} };
+    tplPanelControls().forEach(function (c) {
+      snap.controls[ctlKey(c)] = (c.getAttribute("type") || "").toLowerCase() === "checkbox" ? c.checked : c.value;
+    });
+    return snap;
+  }
+  function tplApply(snap, name) {
+    var ctrls = tplPanelControls();
+    ctrls.forEach(function (c) { // 第一遍：静默写值（handler 互读时先就位）
+      var key = ctlKey(c);
+      if (!(key in snap.controls)) return;
+      if ((c.getAttribute("type") || "").toLowerCase() === "checkbox") c.checked = !!snap.controls[key];
+      else c.value = snap.controls[key];
+    });
+    ctrls.forEach(function (c) { // 第二遍：统一派发，既有 handler 自行 apply
+      if (!(ctlKey(c) in snap.controls)) return;
+      c.dispatchEvent(new Event("input", { bubbles: true }));
+      c.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    statusEl.textContent = "模板已应用: " + name;
+  }
+  function renderTplList() {
+    var list = $("tplList");
+    if (!list) return;
+    var arr = tplLoadRaw();
+    list.innerHTML = "";
+    arr.forEach(function (t, i) {
+      var row = document.createElement("div");
+      row.className = "tplItem";
+      var nm = document.createElement("span");
+      nm.className = "tplName"; nm.textContent = t.name; nm.title = t.name;
+      var bApply = document.createElement("button"); bApply.textContent = "应用";
+      var bOver = document.createElement("button"); bOver.textContent = "覆盖";
+      var bRen = document.createElement("button"); bRen.textContent = "改名";
+      var bDel = document.createElement("button"); bDel.textContent = "删除";
+      bApply.onclick = function () { tplApply(t, t.name); };
+      bOver.onclick = function () { t.controls = tplCapture().controls; t.ts = Date.now(); tplPersist(); renderTplList(); statusEl.textContent = "模板已覆盖: " + t.name; };
+      bDel.onclick = function () { arr.splice(i, 1); tplPersist(); renderTplList(); statusEl.textContent = "模板已删除: " + t.name; };
+      bRen.onclick = function () { // 行内改名：span → input，Enter/失焦提交
+        var ed = document.createElement("input");
+        ed.type = "text"; ed.value = t.name;
+        nm.replaceWith(ed); ed.focus(); ed.select();
+        function commit() {
+          var v = ed.value.trim();
+          if (v && v !== t.name) { t.name = v; tplPersist(); }
+          renderTplList();
+        }
+        ed.onkeydown = function (e) { if (e.key === "Enter") commit(); if (e.key === "Escape") renderTplList(); };
+        ed.onblur = commit;
+      };
+      row.appendChild(nm);
+      row.appendChild(bApply); row.appendChild(bOver); row.appendChild(bRen); row.appendChild(bDel);
+      list.appendChild(row);
+    });
+    if (!arr.length) {
+      var empty = document.createElement("div");
+      empty.style.cssText = "font-size:10px;color:var(--ui-dim);padding:2px 0;";
+      empty.textContent = "（暂无模板）";
+      list.appendChild(empty);
+    }
+  }
+  (function () {
+    var inp = $("inpTplName"), btn = $("btnTplSave");
+    if (!inp || !btn) return;
+    btn.onclick = function () {
+      var name = (inp.value || "").trim() || ("模板 " + (tplLoadRaw().length + 1));
+      var exist = tplLoadRaw().filter(function (t) { return t.name === name; })[0];
+      if (exist) { exist.controls = tplCapture().controls; exist.ts = Date.now(); statusEl.textContent = "同名模板已覆盖: " + name; }
+      else { tplLoadRaw().push({ v: 1, name: name, ts: Date.now(), controls: tplCapture().controls }); statusEl.textContent = "模板已保存: " + name; }
+      inp.value = "";
+      tplPersist();
+      renderTplList();
+    };
+    renderTplList();
+  })();
   // 环模式（1.2.7）：自由变换 / 经典 1.0（3D 场景环）
   $("selRingMode").value = state.ringMode;
   $("selRingMode").onchange = function () {
@@ -2176,12 +2289,76 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
       composer.render();
       var cv = document.createElement("canvas");
       cv.width = canvas.width; cv.height = canvas.height; // 导出期间像素比=1，即导出尺寸
-      cv.getContext("2d").drawImage(canvas, 0, 0, cv.width, cv.height);
+      var g = cv.getContext("2d");
+      g.drawImage(canvas, 0, 0, cv.width, cv.height);
+      drawExportBadge(g, cv.width, cv.height, i * Math.max(20, state.delay)); // b37: 右下角标题随帧推进
       onFrame(i, cv);
       i++;
       setTimeout(next, 16);
     })();
   }
+
+  /* ---------- b37: 导出画面右下角标题徽章 ----------
+   * 「模型区」导出只截 WebGL canvas，DOM 里的标题/均衡条进不来 → 在 2D 画布上复刻：
+   * 布局按窗口 CSS 高度等比缩放（k = h / stageH），颜色用配色部件色（与屏幕一致），
+   * 均衡条透明度随 tMs 推进（GIF 里真的在跳，PNG 单帧取当前时刻）。 */
+  function drawExportBadge(g, w, h, tMs) {
+    var ck = $("inpExpTitle");
+    if (ck && !ck.checked) return;
+    if (getComputedStyle(titleEl).display === "none") return; // HUD 关了就不画
+    var k = h / (stageH || h);
+    if (!(k > 0)) k = 1;
+    var R = 26 * k;                 // 右边距（CSS 26px）
+    var ct = partColor("title");
+    var cb = partColor("bars");
+    g.save();
+    // 1) 标题文字（逐字符画，手工 letter-spacing 0.22em —— canvas 无字符间距属性时的兼容画法）
+    var txt = titleEl.textContent || "HOLOSTAGE";
+    var fs = 26 * k, ls = 0.22 * fs;
+    g.font = "italic 800 " + fs + "px " + getComputedStyle(titleEl).fontFamily;
+    g.textBaseline = "alphabetic";
+    var chars = txt.split("");
+    var tw = 0;
+    chars.forEach(function (c) { tw += g.measureText(c).width + ls; });
+    var tx = w - R, ty = h - 40 * k;
+    g.shadowColor = hexToRgba(ct, 0.45); g.shadowBlur = 12 * k;
+    g.fillStyle = ct;
+    for (var ci = chars.length - 1; ci >= 0; ci--) { // 从右往左画 → 天然右对齐
+      tx -= ls;
+      var cw = g.measureText(chars[ci]).width;
+      tx -= cw;
+      g.fillText(chars[ci], tx, ty);
+    }
+    g.shadowBlur = 0;
+    // 2) 渐变下划线（右→左 淡出）
+    var ry = h - 34 * k - 2 * k, rw = 260 * k, rh = Math.max(1, 2 * k);
+    var grad = g.createLinearGradient(w - R, 0, w - R - rw, 0);
+    grad.addColorStop(0, ct); grad.addColorStop(1, hexToRgba(ct, 0));
+    g.fillStyle = grad;
+    g.shadowColor = hexToRgba(ct, 0.45); g.shadowBlur = 8 * k;
+    g.fillRect(w - R - rw, ry, rw, rh);
+    g.shadowBlur = 0;
+    // 3) 22 根均衡条（heights 6+(b%4)*5px，opacity 动画 1.6s + delay b*0.08s，与 DOM 版一致）
+    var bw = 7 * k, gap = 3 * k, base = h - 12 * k;
+    g.fillStyle = cb;
+    g.shadowColor = hexToRgba(cb, 0.45); g.shadowBlur = 6 * k;
+    for (var b = 0; b < 22; b++) {
+      var phase = (((tMs / 1000) + b * 0.08) % 1.6) / 1.6;         // 0..1
+      var op = 0.25 + 0.75 * (0.5 - 0.5 * Math.cos(phase * Math.PI * 2)); // ease-in-out 近似
+      g.globalAlpha = op;
+      var bh = (6 + (b % 4) * 5) * k;
+      g.fillRect(w - R - (22 - b) * (bw + gap) + gap, base - bh, bw, bh);
+    }
+    g.globalAlpha = 1;
+    g.restore();
+  }
+  // 验证钩子：把徽章画到独立画布导出 dataURL（黑盒测试用，不影响业务）
+  window.holoBadgeTest = function (w, h, tMs) {
+    var cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    drawExportBadge(cv.getContext("2d"), w, h, tMs || 0);
+    return cv.toDataURL("image/png");
+  };
 
   /* ---------- 整窗快照（1.3.3「整个窗口（含界面）」导出）----------
    * JS 侧拿不到 DOM 的栅格化结果（自由模式的全息环、标题、控制面板都是 DOM），
@@ -2412,7 +2589,13 @@ import initTinyUSDZNative from "./tinyusdz-glue.js";
     var name = (state.fileName.replace(/\.[^.]+$/, "") || "holo") + "_frame.png";
     withExportSize(es[0], es[1], function (restore) {
       composer.render();
-      var d = canvas.toDataURL("image/png");
+      // b37: 模型区单帧也带右下角标题徽章（与序列/GIF 同一绘制）
+      var cv = document.createElement("canvas");
+      cv.width = canvas.width; cv.height = canvas.height;
+      var g = cv.getContext("2d");
+      g.drawImage(canvas, 0, 0, cv.width, cv.height);
+      drawExportBadge(g, cv.width, cv.height, performance.now());
+      var d = cv.toDataURL("image/png");
       restore();
       if (bridge) bridge.postMessage({ type: "savePng", data: d.split(",")[1], name: name });
       else downloadData(d, name);

@@ -127,6 +127,12 @@
     font-size: 10px; letter-spacing: 0.1em; text-transform: none;
   }
   details.ring[open] summary { border-bottom: 1px solid var(--ui-line); padding-bottom: 6px; margin-bottom: 4px; }
+  /* b37: 设置模板列表 */
+  #tplList { margin-top: 6px; }
+  #tplList .tplItem { display: flex; align-items: center; gap: 4px; padding: 3px 0; border-bottom: 1px solid var(--ui-line); }
+  #tplList .tplItem .tplName { flex: 1; font-size: 12px; color: var(--ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tplList .tplItem button { font-size: 10px; padding: 2px 6px; }
+  #tplList .tplItem input { font-size: 12px; flex: 1; width: auto; }
   button {
     display: block; width: 100%; margin: 8px 0; padding: 8px;
     background: rgba(63,185,255,0.10); border: 1px solid var(--ui-line);
@@ -578,10 +584,20 @@
     <input type="range" id="inpFrames" min="4" max="120" value="24" style="width:100%">
     <div class="row"><label>帧延时 ms</label><span id="valDelay">100</span></div>
     <input type="range" id="inpDelay" min="20" max="500" value="100" style="width:100%">
+    <div class="row" style="margin-top:6px;"><label>画面带右下角标题</label><input type="checkbox" id="inpExpTitle" checked></div>
+    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">「模型区」导出 PNG / GIF 时把右下角标题 + 渐变线 + 均衡条画进画面（跟随配色）；「整个窗口」模式本来就含界面。导出网页自带标题，不受此开关影响。</div>
     <button id="btnGif">导出 GIF 动画</button>
     <button id="btnSeq">导出 PNG 帧序列</button>
     <button id="btnShot">导出当前帧 PNG</button>
     <button id="btnHtml">导出网页 HTML（单文件）</button>
+  </div>
+  <h2>设置模板</h2>
+  <div>
+    <div class="row"><label>模板名</label></div>
+    <input type="text" id="inpTplName" placeholder="如 暴龙机绿" spellcheck="false">
+    <button id="btnTplSave">保存当前设置为模板</button>
+    <div id="tplList"></div>
+    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">应用 = 套用该模板保存的全部面板设置；覆盖 = 把当前设置写回该模板。模板保存在本机，重开 App 仍在。</div>
   </div>
   <button id="panelToggle" onclick="document.getElementById('panel').classList.remove('hidden')">面板</button>
 
