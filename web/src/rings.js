@@ -6,14 +6,41 @@
 /* 数据弧上的环绕文字默认值（1.3.5：可由面板改写，见 opts.text） */
 export var DATA_TEXT = "HOLOSTAGE // SYS.LINK // 055-8821 // ONLINE";
 
-/* b35: 拉丁字母 → 希腊字母音译（环上文字「希腊文」模式用）；非字母原样保留 */
+/* b35: 拉丁字母 → 希腊字母音译（环上文字「希腊文」模式用）；标点/空格/数字原样保留。
+ * b36 修复：中文等 CJK 字符无希腊对应字母，原样保留会「切了没变」→ 按码位确定性映射成
+ * 希腊字母（同字恒同母，环上节奏稳定），保证任何输入下切换字形都肉眼可见。 */
 var GREEK_MAP = { A: "Α", B: "Β", C: "Κ", D: "Δ", E: "Ε", F: "Φ", G: "Γ", H: "Η", I: "Ι", J: "Ι",
   K: "Κ", L: "Λ", M: "Μ", N: "Ν", O: "Ο", P: "Π", Q: "Θ", R: "Ρ", S: "Σ", T: "Τ",
   U: "Υ", V: "Β", W: "Ω", X: "Χ", Y: "Ψ", Z: "Ζ" };
+var GREEK_LETTERS = "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
 
 export function toGreek(s) {
   var up = String(s).toUpperCase(), out = "";
-  for (var i = 0; i < up.length; i++) out += GREEK_MAP[up.charAt(i)] || up.charAt(i);
+  for (var i = 0; i < up.length; i++) {
+    var ch = up.charAt(i), code = up.charCodeAt(i);
+    if (GREEK_MAP[ch]) { out += GREEK_MAP[ch]; continue; }
+    out += (code >= 0x2E80 && code <= 0x9FFF) || (code >= 0x3000 && code <= 0x303F)
+      ? GREEK_LETTERS.charAt(code % GREEK_LETTERS.length) /* CJK/全角 → 确定性希腊字母 */
+      : ch;
+  }
+  return out;
+}
+
+/* b36: 环上文字按所选字形自动转化（面板三选共用）：
+ * greek → 拉丁音译 + CJK 确定性映射希腊字母；latin/digi → CJK 确定性映射拉丁字母
+ * （digi 模式再经 DigiCode 字形显影成数码文字）。标点/空格/数字原样保留，同字恒同母。 */
+var LATIN_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+export function applyRingScript(text, script) {
+  var s = String(text || "");
+  if (script === "greek") return toGreek(s);
+  var out = "";
+  for (var i = 0; i < s.length; i++) {
+    var code = s.charCodeAt(i);
+    if ((code >= 0x2E80 && code <= 0x9FFF) || (code >= 0x3000 && code <= 0x303F))
+      out += LATIN_LETTERS.charAt(code % 26);
+    else out += s.charAt(i);
+  }
   return out;
 }
 
@@ -125,11 +152,11 @@ export function buildRingSVG(style, seed, hideDot, opts) {
       '<circle cx="300" cy="300" r="206" fill="none" stroke="currentColor" stroke-width="8" stroke-opacity="0.28" stroke-dasharray="89.9 1204.4" stroke-linecap="round"/>' +
       '<circle cx="534" cy="300" r="4" fill="currentColor" opacity="0.9"/>';
     // b35: 文字绕完整一圈 —— 弃用 textPath（只排一段），逐字符旋转均匀排布铺满 360°；
-    // 字形三选：digi 数码文字（DigiCode）/ latin 英文（Menlo）/ greek 希腊文（音译 + Menlo）
+    // b36: 字形三选 + 打什么字都自动转化：digi 数码文字（DigiCode）/ latin 英文 / greek 希腊文
     var RR = 176, CIRC = 2 * Math.PI * RR;
     var bScript = (opts && opts.script) || "digi";
-    var bBase = String(opts && opts.text != null && opts.text !== "" ? opts.text : DATA_TEXT) || DATA_TEXT;
-    if (bScript === "greek") bBase = toGreek(bBase);
+    var bRaw = String(opts && opts.text != null && opts.text !== "" ? opts.text : DATA_TEXT) || DATA_TEXT;
+    var bBase = applyRingScript(bRaw, bScript);
     var bFam = bScript === "digi" ? "DigiCode, Menlo, monospace" : "Menlo, monospace";
     var bChars = fillCircleText(bBase, CIRC);
     var bStep = 360 / bChars.length, bTxt = "";

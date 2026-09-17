@@ -5,7 +5,7 @@
  * 返回 { canvas, spin }：spin = 环平面内自转角速度 rad/s（正=顺时针），移植自 rings.js 的 CSS 动画。
  */
 
-import { DATA_TEXT, toGreek, fillCircleText } from "./rings.js"; // 数据弧文字默认值/整圈补齐/希腊音译：与 rings.js 共用同一份
+import { DATA_TEXT, applyRingScript, fillCircleText } from "./rings.js"; // 数据弧文字默认值/整圈补齐/字形自动转化：与 rings.js 共用同一份
 
 export var RING3D_SIZE = 3.8; // 世界直径：机位 dist≈4.875 + fov45 下 ≈ 画面高度 94%（与 1.0 一致）
 
@@ -121,10 +121,10 @@ export function drawRingCanvas(style, color, hideDot, opts) {
     x.save(); x.rotate(Math.PI); x.lineCap = "round"; dataArcs(); x.restore(); // 绕圆心转 180°（点对称 → 落在对角象限）
     x.lineCap = "butt";
     // 文字环不参与那 180° 旋转（转了会跑到左上且倒着写）
-    // b35: 文字绕完整一圈（与 rings.js 同步）；字形三选：digi 数码文字 / latin 英文 / greek 希腊文
+    // b35: 文字绕完整一圈（与 rings.js 同步）；b36: 打什么字都自动转化成所选字形
     var dTxt = String((opts && opts.text) || DATA_TEXT) || DATA_TEXT;
     var dScript = (opts && opts.script) || "digi";
-    if (dScript === "greek") dTxt = toGreek(dTxt);
+    dTxt = applyRingScript(dTxt, dScript);
     var dFam = dScript === "digi" ? "'DigiCode', Menlo, monospace" : "Menlo, monospace";
     ringText(fillCircleText(dTxt, Math.PI * 2 * 176), 176, 20, 0.75, dFam);
   }
