@@ -562,6 +562,15 @@
     </div>
     <div style="font-size:10px;color:var(--ui-dim);margin-top:6px;">镜头：滚轮缩放 · 左键拖动视角 · W/S 上下 · A/D 左右 · Q/E 推拉 · ⌘/⌥+拖动 = 360° 自由视角 · 右键复位</div>
 
+    <h2>模板</h2>
+    <div>
+      <div class="row"><label>模板名</label></div>
+      <input type="text" id="inpTplName" placeholder="如 暴龙机绿" spellcheck="false">
+      <button id="btnTplSave">保存当前设置为模板</button>
+      <div id="tplList"></div>
+      <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">应用 = 套用该模板保存的全部面板设置；覆盖 = 把当前设置写回该模板。模板保存在本机，重开 App 仍在。</div>
+    </div>
+
     <h2>导出</h2>
     <div class="row"><label>导出内容</label></div>
     <select id="selExpUI">
@@ -590,14 +599,6 @@
     <button id="btnSeq">导出 PNG 帧序列</button>
     <button id="btnShot">导出当前帧 PNG</button>
     <button id="btnHtml">导出网页 HTML（单文件）</button>
-  </div>
-  <h2>设置模板</h2>
-  <div>
-    <div class="row"><label>模板名</label></div>
-    <input type="text" id="inpTplName" placeholder="如 暴龙机绿" spellcheck="false">
-    <button id="btnTplSave">保存当前设置为模板</button>
-    <div id="tplList"></div>
-    <div style="font-size:10px;color:var(--ui-dim);margin-top:4px;">应用 = 套用该模板保存的全部面板设置；覆盖 = 把当前设置写回该模板。模板保存在本机，重开 App 仍在。</div>
   </div>
   <button id="panelToggle" onclick="document.getElementById('panel').classList.remove('hidden')">面板</button>
 
