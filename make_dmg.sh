@@ -6,7 +6,10 @@ set -e
 cd "$(dirname "$0")"
 APP=HoloStage
 VER=$(python3 -c "import plistlib;print(plistlib.load(open('build/$APP.app/Contents/Info.plist','rb'))['CFBundleShortVersionString'])")
-DMG="/Users/banqiu/WorkBuddy/DMG/12-${APP}-${VER}-universal.dmg"
+# DMG 输出目录可配置：默认 ~/WorkBuddy/DMG，可用环境变量 DMG_DIR 覆盖
+DMG_DIR="${DMG_DIR:-$HOME/WorkBuddy/DMG}"
+mkdir -p "$DMG_DIR"
+DMG="$DMG_DIR/12-${APP}-${VER}-universal.dmg"
 [ -d "build/$APP.app" ] || { echo "先跑 ./build.sh"; exit 1; }
 
 STAGING=$(mktemp -d "${TMPDIR:-/tmp}/HoloStage-dmg.XXXXXX")
